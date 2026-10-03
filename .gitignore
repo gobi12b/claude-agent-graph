@@ -8,3 +8,4 @@ venv/
 *.bak
 *.bak-*
 .DS_Store
+target/

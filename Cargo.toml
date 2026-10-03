@@ -1,0 +1,48 @@
+[package]
+name = "claude-agent-graph"
+version = "0.1.0"
+edition = "2021"
+description = "A live graph of your Claude Code sessions and subagents, plus a visual workflow builder and runner."
+license = "MIT"
+authors = ["Gobinath Manokaran"]
+repository = "https://github.com/gobi12b/claude-agent-graph"
+readme = "README.md"
+include = ["src/**", "agent_graph/index.html", "agent_graph/assets/*", "agent_graph/defaults/*.yaml", "README.md", "LICENSE"]
+
+[[bin]]
+name = "agent-graph"
+path = "src/main.rs"
+
+[features]
+default = []
+# A native window (WebKitGTK on Linux, WKWebView on macOS, WebView2 on Windows) instead of a browser tab.
+# Linux needs the WebKitGTK development files to build it: libwebkit2gtk-4.1-dev (Debian/Ubuntu) or
+# webkit2gtk4.1-devel (Fedora).
+window = ["dep:wry", "dep:tao", "dep:png"]
+
+[dependencies]
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+ctrlc = { version = "3", features = ["termination"] }
+indexmap = "2"
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4"] }
+webbrowser = "1"
+which = "7"
+wry = { version = "0.53", optional = true }
+tao = { version = "0.34", optional = true }
+png = { version = "0.17", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
