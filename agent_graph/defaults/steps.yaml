@@ -1,0 +1,79 @@
+# Claude Agent Graph: step templates shown under "Steps" in the workflow builder.
+#
+# Add or override templates in ~/.config/claude-agent-graph/steps.yaml (same shape; same key replaces).
+# Per template: icon, name, prompt (or run: a shell command, which needs no Claude and costs nothing), and optional retries, check (shell command that must succeed),
+# model, review (true = pause for your review), agents (library roles to attach), loopBack.
+
+steps:
+  plan:
+    icon: "🧭"
+    name: Plan
+    prompt: Investigate the codebase and write a short, numbered implementation plan for <describe the task>. Do not change any files.
+  spec:
+    icon: "📝"
+    name: Write spec
+    prompt: |
+      Write a requirements spec for <describe the product or feature> as docs/spec.md: goals, users,
+      user stories with Given/When/Then acceptance criteria, non-functional requirements and open questions.
+    agents: [business-analyst]
+    review: true
+  design:
+    icon: "🎨"
+    name: UX design
+    prompt: Design the user experience from docs/spec.md. Write docs/design.md (flows, screens, states, accessibility) and a static HTML mockup in design/.
+    agents: [ux-designer]
+    review: true
+  architecture:
+    icon: "🏛"
+    name: Architecture
+    prompt: Design the architecture for docs/spec.md in docs/architecture.md (components, data, APIs, decisions as ADRs). Fit the existing codebase.
+    agents: [solution-architect]
+  implement:
+    icon: "🛠"
+    name: Implement
+    retries: 2
+    prompt: Implement the plan from the previous step. Keep changes focused and match the existing code style.
+  build:
+    icon: "🧱"
+    name: Build check
+    retries: 2
+    check: ./gradlew assembleDebug
+    prompt: Make sure the project builds. If it doesn't, fix the errors.
+  test:
+    icon: "🧪"
+    name: Test & fix
+    retries: 2
+    check: ./gradlew test
+    prompt: Run the tests. Fix any failures caused by the recent changes.
+  review:
+    icon: "🔎"
+    name: Code review
+    prompt: Review the changes made so far for bugs, edge cases, security and style problems. Fix anything important.
+    agents: [code-reviewer]
+  security:
+    icon: "🛡"
+    name: Security check
+    prompt: Check the changes for security vulnerabilities (OWASP Top 10, secrets, dependencies) and fix what you confirm.
+    agents: [appsec-engineer]
+  docs:
+    icon: "📘"
+    name: Docs
+    prompt: Update the README and docs for the changes made in this workflow. Verify every command you document.
+    agents: [technical-writer]
+  commit:
+    icon: "📦"
+    name: Commit
+    prompt: Commit the changes with a clear, descriptive commit message. Do not push.
+  shell:
+    icon: "⌨"
+    name: Shell command
+    run: echo "replace with your command"   # free: runs with bash, no Claude
+  run-tests:
+    icon: "✅"
+    name: Run tests (free)
+    run: ./gradlew test   # or: dotnet test, npm test, pytest
+  blank:
+    icon: "＋"
+    name: New step
+    retries: 1
+    prompt: ""

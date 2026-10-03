@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-agent-graph"
+dynamic = ["version"]
+description = "A live graph of your Claude Code sessions and subagents, plus a visual workflow builder and runner."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Gobinath Manokaran" }]
+dependencies = ["ruamel.yaml>=0.17"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Web Environment",
+]
+
+[project.optional-dependencies]
+window = ["pywebview>=5"]
+
+[project.scripts]
+agent-graph = "agent_graph.app:main"
+
+[project.urls]
+Homepage = "https://github.com/gobi12b/claude-agent-graph"
+
+[tool.setuptools]
+packages = ["agent_graph"]
+
+[tool.setuptools.dynamic]
+version = { attr = "agent_graph.__version__" }
+
+[tool.setuptools.package-data]
+agent_graph = ["index.html", "defaults/*.yaml"]
