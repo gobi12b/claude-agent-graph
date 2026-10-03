@@ -10,13 +10,15 @@ import argparse
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import workflows
+from . import providers, workflows
 from .watcher import Graph
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,7 +47,7 @@ def poll_forever():
         try:
             wf_before = wf_version[0]
             wf_version[0] = workflows.wfstore.version()
-            if graph.scan(live=True) or wf_version[0] != wf_before:
+            if graph.scan(live=True) or wf_version[0] != wf_before or runner.sync_disk():  # + runs started in a terminal
                 notify()
         except Exception as exc:  # keep watching even if one file is odd
             print("scan error:", exc, file=sys.stderr)
@@ -59,6 +61,60 @@ def kill(body):
     return {"ok": ok, "message": message}
 
 
+# ---- project folders: the "where should this workflow work?" question ----
+def _tilde(p):
+    home = os.path.expanduser("~")
+    return "~" + p[len(home):] if p == home or p.startswith(home + os.sep) else p
+
+
+def recent_folders(limit=12):
+    """Folders your Claude sessions ran in, plus ones that already hold workflows, most recent first."""
+    seen = {}
+    with graph.lock:
+        for n in graph.nodes.values():
+            cwd = n.get("cwd")
+            if cwd and n.get("kind") == "session":
+                seen[cwd] = max(seen.get(cwd, 0), n.get("lastActive") or 0)
+    for p in workflows.wfstore.project_dirs():
+        seen.setdefault(p, 0)
+    home = os.path.realpath(os.path.expanduser("~"))
+    def useful(p):  # skip temporary and hidden folders (scratch space, caches): nobody picks those as a project
+        real = os.path.realpath(p)
+        return (os.path.isdir(real) and real != home and not real.startswith(("/tmp", "/var/tmp"))
+                and not any(part.startswith(".") for part in real.split(os.sep)))
+    dirs = [p for p in sorted(seen, key=lambda p: -seen[p]) if useful(p)]
+    return {"recent": [_tilde(p) for p in dirs[:limit]], "home": "~"}
+
+
+def check_folder(body):
+    raw = str(body.get("path") or "").strip()
+    if not raw:
+        raise ValueError("Choose a folder first.")
+    path = os.path.realpath(os.path.expanduser(raw))
+    if body.get("create") and not os.path.exists(path):
+        os.makedirs(path)
+    exists = os.path.isdir(path)
+    return {"path": _tilde(path), "exists": exists, "isFile": os.path.isfile(path),
+            "git": exists and os.path.isdir(os.path.join(path, ".git")),
+            "entries": len(os.listdir(path)) if exists else 0}
+
+
+def pick_folder(body):
+    """Open the desktop's own folder chooser (zenity or kdialog). Returns None if cancelled."""
+    start = os.path.realpath(os.path.expanduser(str(body.get("start") or "~")))
+    if not os.path.isdir(start):
+        start = os.path.expanduser("~")
+    if shutil.which("zenity"):
+        cmd = ["zenity", "--file-selection", "--directory", "--title=Choose the project folder", "--filename=" + start + os.sep]
+    elif shutil.which("kdialog"):
+        cmd = ["kdialog", "--getexistingdirectory", start, "--title", "Choose the project folder"]
+    else:
+        raise ValueError("No folder chooser is available here. Type the folder's path instead.")
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    chosen = p.stdout.strip()
+    return _tilde(chosen) if p.returncode == 0 and chosen else None
+
+
 def ok(value=None, **extra):
     return {"ok": True, "data": value, **extra}
 
@@ -67,6 +123,8 @@ API_GET = {
     "/api/permissions": lambda: ok(workflows.read_permissions()),
     "/api/workflows": lambda: ok(workflows.workflows_state()),
     "/api/ides": lambda: ok(workflows.list_ides()),
+    "/api/folders": lambda: ok(recent_folders()),
+    "/api/models": lambda: ok(providers.status()),
     "/api/defaults": lambda: ok(workflows.wfstore.load_defaults()),
 }
 API_POST = {
@@ -84,6 +142,10 @@ API_POST = {
     "/api/runs/start": lambda b: ok(runner.start(b["id"])),
     "/api/runs/stop": lambda b: ok(runner.stop(b["id"])),
     "/api/runs/replay": lambda b: ok(runner.replay(b["id"], b["step"], bool(b.get("only")))),
+    "/api/folders/check": lambda b: ok(check_folder(b)),
+    "/api/models/extra": lambda b: ok(providers.set_extra_models(b.get("provider"), b.get("models"))),
+    "/api/folders/pick": lambda b: ok(pick_folder(b)),
+    "/api/runs/steer": lambda b: ok(runner.steer(b["id"], b["step"], b.get("message"), b.get("only", True) is not False)),
     "/api/runs/detail": lambda b: ok(runner.detail(b["id"])),
     "/api/runs/folder": lambda b: ok(runner.open_folder(b["id"])),
     "/api/runs/log": lambda b: ok(runner.log(b["id"], b["session"])),
@@ -212,7 +274,11 @@ def main():
         import subprocess
 
         sys.exit(subprocess.call([sys.executable, "-X", "utf8", "-m", "agent_graph", *sys.argv[1:]]))
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    if len(sys.argv) > 1 and sys.argv[1] in ("run", "list", "runs", "validate"):  # terminal commands, no window
+        from . import cli
+        sys.exit(cli.main(sys.argv[1:]))
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                 epilog="Terminal commands: agent-graph list | run <workflow or file.yaml> | validate [files] | runs  (add --help to each)")
     ap.add_argument("--browser", action="store_true", help="open in the default browser instead of a window")
     ap.add_argument("--port", type=int, default=0, help="port to serve on (default: random free port)")
     args = ap.parse_args()

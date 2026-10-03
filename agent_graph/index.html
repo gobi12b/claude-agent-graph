@@ -12,7 +12,7 @@
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25); --shadow-lg: 0 12px 40px rgba(0,0,0,.45);
     /* one accent per entity, used for its icon, header and badges everywhere */
     --e-home: #6d74ff; --e-live: #22b8cf; --e-sessions: #3b9cff; --e-workflows: #6d74ff; --e-runs: #0ea5a4;
-    --e-helpers: #b58cff; --e-templates: #f59e0b; --e-permissions: #22c55e;
+    --e-helpers: #b58cff; --e-templates: #f59e0b; --e-permissions: #22c55e; --e-models: #ec4899;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -20,7 +20,7 @@
       --you: #151823; --ended: #b5bac4; --spawn: #9aa1b5; --prompt: #4f56e8;
       --shadow: 0 1px 2px rgba(16,24,40,.05), 0 2px 8px rgba(16,24,40,.06); --shadow-lg: 0 16px 48px rgba(16,24,40,.16);
       --e-home: #4f56e8; --e-workflows: #4f56e8; --e-sessions: #2563eb; --e-runs: #0d9488; --e-helpers: #9333ea;
-      --e-templates: #d97706; --e-permissions: #16a34a; --e-live: #0891b2;
+      --e-templates: #d97706; --e-permissions: #16a34a; --e-models: #db2777; --e-live: #0891b2;
     }
   }
   * { box-sizing: border-box; }
@@ -114,6 +114,10 @@
   .form .big { min-height: 200px; font-family: inherit; font-size: 13.5px; line-height: 1.55; }
   .seg .segopt { flex: 1; text-align: center; padding: 8px 6px; font-size: 13px; color: var(--muted); background: var(--bg); cursor: pointer; }
   .seg input:checked + .segopt { background: var(--prompt); color: #fff; font-weight: 600; }
+  .mstep { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .mstep b { font-size: 12px; color: var(--muted); }
+  .cmd { display: inline-flex; gap: 6px; align-items: center; max-width: 100%; margin: 2px 0; }
+  .cmd code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; font-size: 12px; overflow-x: auto; white-space: nowrap; max-width: 100%; }
   .toolpick { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 14px; }
   .toolpick .chk { font-size: 13px; }
   .defbox svg { width: 20px; height: 20px; flex-shrink: 0; color: var(--ec, var(--prompt)); }
@@ -254,6 +258,7 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
   label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
   label.f.full { grid-column: 1 / -1; }
+  label.f input, label.f textarea, label.f select, .f input, .f textarea { font-weight: 400; color: var(--text); }
   input, select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; width: 100%; }
   textarea { resize: vertical; min-height: 70px; font-family: inherit; font-size: 13.5px; line-height: 1.5; }
@@ -404,6 +409,13 @@
   .lnow { display: flex; gap: 8px; align-items: center; padding: 8px 10px; color: var(--busy); font-size: 12px; }
   .lnow .st { width: 12px; height: 12px; margin: 0; }
   .st.waiting { background: var(--message); font-size: 9px; }
+  .st.steered { background: var(--prompt); }  .try.steered { color: var(--prompt); }
+  .steerbox { border: 1px solid color-mix(in srgb, var(--prompt) 40%, var(--line)); border-radius: 12px; padding: 12px; margin-bottom: 14px;
+    background: color-mix(in srgb, var(--prompt) 5%, var(--panel)); }
+  .steerbox .rbhead { color: var(--prompt); }
+  .steerbox textarea { margin: 8px 0; min-height: 64px; }
+  .steerbox .sent { font-size: 13px; color: var(--prompt); }
+  .steerbox.quiet { padding: 8px 12px; background: none; border-style: dashed; color: var(--muted); font-size: 12.5px; }
   .stchip.waiting { background: var(--message); }
   .rvcard.st-waiting { border-color: var(--message); box-shadow: 0 0 0 3px color-mix(in srgb, var(--message) 25%, transparent); }
   .creview { margin: 8px 0 0 26px; font-size: 12px; color: var(--message); display: flex; gap: 6px; align-items: center; }
@@ -442,6 +454,7 @@
     <button class="ritem" data-go="helpers" style="--ec:var(--e-helpers)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.6.8 2.6 2.4 3 5.2"/></svg><span>Helpers</span><b class="rbadge" id="rb-helpers" hidden></b></button>
     <button class="ritem" data-go="templates" style="--ec:var(--e-templates)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><path d="M17 14v6M14 17h6"/></svg><span>Step templates</span><b class="rbadge" id="rb-templates" hidden></b></button>
     <button class="ritem" data-go="permissions" style="--ec:var(--e-permissions)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Permissions</span><b class="rbadge" id="rb-permissions" hidden></b></button>
+    <button class="ritem" data-go="models" style="--ec:var(--e-models)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg><span>AI models</span><b class="rbadge" id="rb-models" hidden></b></button>
     <div class="railfoot">
       <button class="ritem" id="helpbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"/><path d="M12 17.5h.01"/></svg><span>Help</span></button>
       <button class="ritem" id="reload" title="Refresh the page (F5 / Ctrl+R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg><span>Refresh</span></button>
@@ -503,6 +516,7 @@
   <section class="page" data-page="helpers"><div class="pg" id="pg-helpers"></div></section>
   <section class="page" data-page="templates"><div class="pg" id="pg-templates"></div></section>
   <section class="page" data-page="permissions"><div class="pg" id="pg-permissions"></div></section>
+  <section class="page" data-page="models"><div class="pg" id="pg-models"></div></section>
   </main>
 </div>
 <div id="modal"><div class="sheet" role="dialog" aria-modal="true">
@@ -514,7 +528,7 @@
 const WINDOWS = [["Running now", 0], ["Last hour", 3600], ["Today", 86400], ["This week", 604800], ["All time", Infinity]];
 // plain words for the server's status / kind values
 const STATUS_WORD = { busy: "Working", running: "Working", idle: "Waiting for you", live: "Open", ended: "Closed", done: "Done",
-  succeeded: "Done", ok: "Done", failed: "Failed", stopped: "Stopped", waiting: "Needs your review", pending: "Not started yet", skipped: "Skipped" };
+  succeeded: "Done", ok: "Done", failed: "Failed", stopped: "Stopped", waiting: "Needs your review", pending: "Not started yet", skipped: "Skipped", steered: "Steered by you" };
 const KIND_WORD = { session: "Claude session", agent: "Helper agent", workflow: "Workflow", you: "You" };
 const word = (map, v) => map[v] || v || "";
 let windowSec = 86400;
@@ -1211,9 +1225,9 @@ function dur(sec) {
   if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s";
   return Math.floor(sec / 3600) + "h " + Math.floor(sec % 3600 / 60) + "m";
 }
-const stIcon = st => `<span class="st ${st}">${st === "done" ? "✓" : st === "failed" ? "✗" : st === "waiting" ? "👤" : ""}</span>`;
+const stIcon = st => `<span class="st ${st}">${st === "done" ? "✓" : st === "failed" ? "✗" : st === "waiting" ? "👤" : st === "steered" ? "↪" : ""}</span>`;
 const normSt = s => s === "busy" || s === "running" ? "running" : s === "done" || s === "succeeded" || s === "ok" ? "done"
-                  : s === "failed" ? "failed" : s === "waiting" ? "waiting" : "stopped";
+                  : s === "failed" ? "failed" : s === "waiting" ? "waiting" : s === "steered" ? "steered" : "stopped";
 
 // ---- in progress --------------------------------------------------------
 function renderProgress() {
@@ -1310,17 +1324,29 @@ function renderWorkflows() {
     wfErrors.map(e => `<div class="wferr"><b>⚠ ${esc(e.name)}</b> couldn't be loaded because its file has a mistake:<div>${esc(e.error)}</div>
       <button class="btn sm" data-code="${esc(e.id)}">Open the file to fix it</button></div>`).join("") +
     (cards ? `<div class="grid">${cards}</div>` : `<div class="emptybox"><b>No workflows yet</b>
-      A workflow is a list of steps Claude does for you in order, such as “Plan → Build → Test”.<br>Make one once, then run it whenever you like.
-      <br><button class="btn pri lg" data-new>＋ Create your first workflow</button></div>`);
+      A workflow is a list of steps Claude does for you in order, such as “Plan → Build → Test”.<br>Start from a sample below, or make your own.
+      <br><button class="btn pri lg" data-new>＋ Create your first workflow</button></div>`) + sampleGallery();
+}
+function sampleGallery() {
+  const samples = DEFAULTS.samples || [];
+  if (!samples.length) return "";
+  return `<div class="section"><h2>Start from a sample</h2><span class="hint">Ready-made workflows for everyday jobs. Pick one, choose your project folder, and adjust it before saving.</span></div>
+    <div class="grid">${samples.map(x => `<div class="ecard click" data-sample="${esc(x.id)}" style="--ec:var(--e-workflows)">
+      <div class="top"><div class="eicon sm" style="font-size:18px">${esc(x.icon || "◆")}</div>
+        <div class="ttlbox"><div class="ttl">${esc(x.name)}</div><div class="meta">${x.steps.length} step${x.steps.length === 1 ? "" : "s"}${x.steps.some(st => st.review) ? " · 👤 pauses for your review" : ""}</div></div><span class="tag">Sample</span></div>
+      <div class="desc" style="-webkit-line-clamp:3">${esc(x.description || "")}</div>
+      <div class="flowline">${x.steps.map(st => `<span class="s">${st.review ? "👤 " : ""}${esc(st.name)}</span>`).join(`<span class="a">→</span>`)}</div>
+      <div class="foot"><button class="btn pri" data-sample="${esc(x.id)}">Use this sample</button></div></div>`).join("")}</div>`;
 }
 document.addEventListener("click", e => {  // close any open "More" menu when clicking elsewhere
   for (const m of document.querySelectorAll(".more[open]")) if (!m.contains(e.target)) m.removeAttribute("open");
 });
 document.getElementById("wfpane").addEventListener("click", async e => {
-  const b = e.target.closest("button, [data-openrun], [data-id]"); if (!b) return;
+  const b = e.target.closest("button, [data-openrun], [data-id], [data-sample]"); if (!b) return;
   const d = b.dataset; wfMsg = "";
   try {
     if ("new" in d) return openEditor(null);
+    if (d.sample) return openNewWorkflow(d.sample);
     if (d.edit) return openEditor(workflows.find(w => w.id === d.edit));
     if (d.code) { b.closest(".more")?.removeAttribute("open"); return await api("/api/workflows/open", { id: d.code }); }
     if (d.dup) { const w = structuredClone(workflows.find(w => w.id === d.dup)); delete w.id; delete w.file; delete w.updated; w.name += " (copy)"; return openEditor(w); }
@@ -1425,8 +1451,8 @@ builder.innerHTML = `
   <header>
     <button class="btn" id="bback" title="Back to the graph (Esc)" aria-label="Back">← Back</button>
     <label class="bfield">Name<input id="bname" placeholder="e.g. Fix failing tests"></label>
-    <label class="bfield">Project folder<input id="bcwd" placeholder="~/Desktop/code/my-app" title="Folder the workflow runs in"></label>
-    <label class="bfield">AI model<select id="bmodel">${opts(MODELS, "")}</select></label>
+    <label class="bfield">Project folder<span style="display:flex;gap:4px"><input id="bcwd" placeholder="~/Desktop/code/my-app" title="Folder the workflow runs in"><button class="btn" id="bbrowse" type="button" title="Choose the folder" aria-label="Choose the folder">📁</button></span></label>
+    <label class="bfield">AI model<select id="bmodel"></select></label>
     <span class="msg" id="bmsg"></span>
     <span class="synced" id="bsynced"></span>
     <button class="btn" id="bcode" title="Open this workflow's YAML file in your text editor. Changes there show up here.">&lt;/&gt; Open as text</button>
@@ -1441,8 +1467,9 @@ builder.innerHTML = `
   </div>`;
 document.body.appendChild(builder);
 
-function openEditor(wf) {
-  perms = null;
+// preset: {name, cwd} chosen in the "New workflow" dialog. A brand-new workflow always asks for its folder first.
+function openEditor(wf, preset) {
+  if (!wf && !preset) return openNewWorkflow();
   draft = wf ? structuredClone(wf) : { name: "", cwd: "~/Desktop/code", model: "haiku", permissionMode: "acceptEdits",
     allowedTools: [], disallowedTools: [], passOutput: true, maxBudgetUsd: "", agents: [], steps: [] };
   draft.agents ||= [];
@@ -1457,9 +1484,22 @@ function openEditor(wf) {
   document.getElementById("bsynced").title = draft.file || "";
   document.getElementById("bname").value = draft.name;
   document.getElementById("bcwd").value = draft.cwd;
+  document.getElementById("bmodel").innerHTML = modelOpts(draft.model || "", "Default (Claude)");
   document.getElementById("bmodel").value = draft.model || "";
+  loadModels();  // pick up a model tool installed since the app started
   document.getElementById("bmsg").textContent = "";
   builder.classList.add("on");
+  if (preset) {
+    draft.name = preset.name || ""; draft.cwd = preset.cwd;
+    document.getElementById("bname").value = draft.name; document.getElementById("bcwd").value = draft.cwd;
+    if (preset.sample) {  // a sample: its steps, helpers and review points, with the user's task filled in
+      const fill = t => String(t || "").replace(/\{task\}/g, preset.task || "<describe the task>").trim();
+      draft.steps = preset.sample.steps.map(st => ({ id: uid(), name: st.name, prompt: fill(st.prompt), retries: +st.retries || 0,
+        check: st.check || "", model: st.model || "", onSuccess: "next", onFailure: "stop", review: !!st.review,
+        agents: (st.agents || []).filter(ensureAgent), ...(st.run !== undefined ? { kind: "bash", run: fill(st.run) } : {}) }));
+      if (preset.sample.model) { draft.model = preset.sample.model; document.getElementById("bmodel").value = draft.model; }
+    }
+  }
   renderBuilder();
 }
 function closeBuilder() { builder.classList.remove("on"); draft = null; hideSync(); }
@@ -1565,7 +1605,7 @@ function renderLane() {
     const filled = s.kind === "bash" ? (s.run || "").trim() : s.prompt.trim();
     return `<div class="card ${sel?.type === "step" && sel.i === i ? "on" : ""} ${filled ? "" : "empty"} ${s.kind === "bash" ? "bash" : ""}" data-i="${i}" data-drag="card">
       <div class="ctop"><span class="num">${i + 1}</span><b class="cname">${esc(s.name)}</b>
-        <span class="badges">${s.kind === "bash" ? `<span class="free" title="Runs the command with bash: no Claude, no cost">⌨ shell · free</span>` : ""}${s.retries ? `<span class="r" title="Retries">↻${s.retries}</span>` : ""}${s.check ? `<span title="Success check: ${esc(s.check)}">✔ check</span>` : ""}${s.model ? `<span>${esc(s.model)}</span>` : ""}</span>
+        <span class="badges">${s.kind === "bash" ? `<span class="free" title="Runs the command with bash: no Claude, no cost">⌨ shell · free</span>` : ""}${s.retries ? `<span class="r" title="Retries">↻${s.retries}</span>` : ""}${s.check ? `<span title="Success check: ${esc(s.check)}">✔ check</span>` : ""}${s.model ? `<span>${esc(modelLabel(s.model))}</span>` : ""}</span>
         <button class="x" data-del="${i}" title="Remove step" aria-label="Remove step">✕</button></div>
       ${s.kind === "bash" ? `<div class="cprompt cmd">${(s.run || "").trim() ? "$ " + esc(s.run) : "Click to write the shell command…"}</div>`
         : `<div class="cprompt">${s.prompt.trim() ? esc(s.prompt) : "Click here to say what Claude should do…"}</div>`}
@@ -1606,7 +1646,7 @@ function renderInspector() {
           <label class="f">Time limit (s)<input data-s="timeout" type="number" min="10" value="${esc(s.timeout || 1800)}"></label>
         </div>` : `<div class="grid2">
         <label class="f">Retries <span class="hint">tries again if it fails</span><span class="stepper"><button class="btn sm" data-ret="-1">−</button><b>${s.retries}</b><button class="btn sm" data-ret="1">+</button></span></label>
-        <label class="f">AI model<select data-s="model">${opts([["", `Same as workflow (${draft.model || "default"})`], ...MODELS.slice(1)], s.model)}</select></label>
+        <label class="f">AI model<select data-s="model">${modelOpts(s.model, `Same as workflow (${modelLabel(draft.model) || "Claude default"})`)}</select></label>
       </div>`}
       <label class="f">Success check <span class="hint">optional. A terminal command that must pass, such as your tests. If it fails, the step is retried.</span>
         <input data-s="check" value="${esc(s.check)}" placeholder="e.g. ./gradlew test"></label>
@@ -1865,6 +1905,9 @@ document.getElementById("lane").addEventListener("click", e => {
 async function saveDraft(run) {
   const msg = document.getElementById("bmsg");
   if (!draft.steps.length) { msg.className = "msg err"; msg.textContent = "Add at least one step."; return; }
+  const hole = draft.steps.findIndex(s => s.kind !== "bash" && /<describe [^<>\n]*>/.test(s.prompt));
+  if (hole >= 0 && !confirm(`Step ${hole + 1} (“${draft.steps[hole].name}”) still contains “${draft.steps[hole].prompt.match(/<describe [^<>\n]*>/)[0]}”, a part meant to be filled in. Save anyway?`))
+    return select2({ type: "step", i: hole });
   const empty = draft.steps.findIndex(s => s.kind === "bash" ? !(s.run || "").trim() : !s.prompt.trim());
   if (empty >= 0) { msg.className = "msg err"; msg.textContent = `Step ${empty + 1} needs ${draft.steps[empty].kind === "bash" ? "a command" : "a prompt"}.`; return select2({ type: "step", i: empty }); }
   try {
@@ -1995,11 +2038,45 @@ function reviewLine(atts, p, r) {
   }).join("");
 }
 
+// 💬 steer: redirect a step with your guidance; Claude continues the same conversation (like steering Claude Code)
+function stepsAfter(plan, id) {  // how many steps (directly or indirectly) depend on this one
+  const deps = (q, i) => q.dependsOn ?? (i > 0 ? [plan[i - 1].id] : []), seen = new Set([id]);
+  let grew = true;
+  while (grew) { grew = false; plan.forEach((q, i) => { if (!seen.has(q.id) && deps(q, i).some(d => seen.has(d))) { seen.add(q.id); grew = true; } }); }
+  return seen.size - 1;
+}
+function steerBox(p, atts, r) {
+  const last = atts.at(-1);
+  if (!last || last.kind === "bash") return "";
+  if (r.external && r.status === "waiting") return "";  // the review box already points to the terminal
+  if (r.external && r.status === "running")
+    return `<div class="steerbox quiet">⌨ This run is going in a terminal (<code>agent-graph run</code>). You can follow it here and stop it; steer it once it has finished.</div>`;
+  if (r.status === "waiting" && last.review?.status === "pending") return "";  // the review box is the steer here
+  const box = (hint, buttons, extra = "") => `<div class="steerbox">
+    <div class="rbhead">💬 Steer this step</div><div class="hint">${hint}</div>${extra}
+    <textarea id="rvsteer" rows="3" placeholder="e.g. “Use a dark theme, and keep it to a single page.”  (Ctrl+Enter to send)">${esc(rv.steerDraft || "")}</textarea>
+    <div class="rbacts">${buttons}</div></div>`;
+  if (r.status === "running" && last.status === "running") {
+    if (last.steerPending) return `<div class="steerbox"><div class="rbhead">💬 Steer this step</div>
+      <div class="sent">↪ Sent: “${esc(last.steerPending)}”. Claude is switching to your guidance…</div></div>`;
+    return box("Claude is working on this step now. Send guidance and it stops, then carries on with your message. It keeps everything it has done so far, and this doesn't use up a retry.",
+      `<button class="btn pri" data-steer="now">↪ Send to Claude</button>`);
+  }
+  if (r.status === "running" || r.status === "waiting")
+    return `<div class="steerbox quiet">💬 You can steer this step once the run finishes. While it runs, you can steer the step that's working now.</div>`;
+  const rest = stepsAfter(r.plan || [], p.id);
+  return box("Not quite right? Tell Claude what to change. It picks up this step's conversation where it left off, so it remembers what it did, and redoes the step with your feedback.",
+    `<button class="btn pri" data-steer="only">↪ Redo this step with my feedback</button>
+     ${rest ? `<button class="btn" data-steer="rest">↪ Redo it and the ${rest} step${rest > 1 ? "s" : ""} after it</button>` : ""}`);
+}
+
 function reviewBox(att) {
   if (!(att.review?.status === "pending" && rv.run.status === "waiting")) return "";
+  if (rv.run.external) return `<div class="reviewbox"><div class="rbhead">👤 Waiting for your review in the terminal</div>
+    <div class="hint">This run was started with <code>agent-graph run</code>. Answer there: approve, request changes, or stop. You can check its files and result here.</div></div>`;
   return `<div class="reviewbox">
     <div class="rbhead">👤 Your review</div>
-    <div class="hint">Check the files below and the Result tab. Then approve, or describe what should change.</div>
+    <div class="hint">Check the files below and the Result tab. Then approve, or describe what should change. Claude redoes the step with your feedback.</div>
     <textarea id="rvfeedback" rows="4" placeholder="Feedback: e.g. “Add a dark theme and make the lesson list collapsible.” With Approve, this goes to the next step as notes.">${esc(rv.draftFeedback || "")}</textarea>
     <div class="rbacts"><button class="btn pri" data-review="approve">✓ Approve & continue</button>
       <button class="btn" data-review="revise">↺ Request changes</button>
@@ -2009,6 +2086,8 @@ function reviewBox(att) {
 function renderRunSide() {
   // don't redraw under the user's cursor while they type review feedback
   if (document.activeElement?.id === "rvfeedback" && rv.run.status === "waiting") return;
+  if (document.activeElement?.id === "rvsteer") return;
+  const sd = document.getElementById("rvsteer"); if (sd) rv.steerDraft = sd.value;
   if (rv.preview?.editing) { const ed = document.getElementById("rvedit"); if (ed) rv.preview.draft = ed.value; if (document.activeElement === ed) return; }
   if (rv.promptEdit) { const ed = document.getElementById("rvprompt"); if (ed) rv.promptEdit.draft = ed.value; if (document.activeElement === ed) return; }
   const el = document.getElementById("rvside"), r = rv.run;
@@ -2058,7 +2137,7 @@ function renderRunSide() {
   const keep = logEl ? logEl.scrollTop : 0, open = logEl ? [...logEl.querySelectorAll("details[open]")].map(x => x.dataset.k) : [];
   const fb = document.getElementById("rvfeedback");
   if (fb) rv.draftFeedback = fb.value;
-  el.innerHTML = `${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}
+  el.innerHTML = `${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}${steerBox(p, atts, r)}
     <nav class="tabs rvtabs">${tab("input", "Instructions", (att.reads || []).length)}${tab("log", att.status === "running" ? "● Live activity" : "Activity")}${tab("files", "Files", files.size)}${tab("output", "Result")}${tab("errors", "Problems", errs.length)}</nav>
     <div class="rvtab">${body}</div>`;
   const nl = document.getElementById("rvlog");
@@ -2139,7 +2218,7 @@ function sideHead(p, r) {
 
 function highlightInput(html) {  // make the appended sections easy to spot
   return html.replace(/^---$/gm, '<span class="sep">────────</span>')
-    .replace(/^(Output from the previous workflow step:|Notes from the user(?:&#39;|')s review.*|This is retry .*|You already did this step once.*|The user reviewed your result.*|Delegate this task.*|Run the subagents below.*|You can delegate parts.*)$/gm, '<b class="hl">$1</b>');
+    .replace(/^(Output from the previous workflow step:|Notes from the user(?:&#39;|')s review.*|This is retry .*|You already did this step once.*|The user reviewed your result.*|Delegate this task.*|Run the subagents below.*|You can delegate parts.*|The user (?:interrupted you|looked at your result).*steering you:)$/gm, '<b class="hl">$1</b>');
 }
 
 function attemptChips(atts, att) {
@@ -2150,6 +2229,7 @@ function attLabel(a, cap) {
   if (a.replay) parts.push("replay " + a.replay);
   if (a.loop) parts.push("round " + (a.loop + 1));
   if (a.revision) parts.push("revision " + a.revision);
+  if (a.steer) parts.push("steered");
   parts.push(a.attempt > 1 ? "retry " + (a.attempt - 1) : parts.length ? "" : "try 1");
   const s = parts.filter(Boolean).join(" · ");
   return cap ? s[0].toUpperCase() + s.slice(1) : s;
@@ -2643,12 +2723,35 @@ document.getElementById("rvside").addEventListener("click", async e => {
       return renderRunSide();
     }
     if (d.att) { rv.attempt = d.att; return renderRunSide(); }
+    if (d.steer) return sendSteer(d.steer, b);
     if (d.replay) return showPop(d.replay);
     if (d.open) return await api("/api/runs/open", { id: rv.id, path: d.open });
     if (d.ide) { const n = await api("/api/runs/ide", { id: rv.id, path: d.ide }); document.getElementById("rvmsg").textContent = `Opened in ${n}.`; return; }
     if (d.folder) return await api("/api/runs/open", { id: rv.id, path: d.folder, folder: true });
     if (d.path) return previewFile(d.path);
   } catch (err) { document.getElementById("rvmsg").textContent = err.message; }
+});
+async function sendSteer(how, b) {
+  const ta = document.getElementById("rvsteer"), message = (ta?.value || "").trim();
+  const msg = document.getElementById("rvmsg");
+  if (!message) { msg.className = "msg err"; msg.textContent = "Write what Claude should do differently first."; return ta?.focus(); }
+  if (b) b.disabled = true;
+  try {
+    await api("/api/runs/steer", { id: rv.id, step: rv.step, message, only: how !== "rest" });
+    rv.steerDraft = "";  // a live update may have redrawn the panel meanwhile: clear whichever box is there now
+    const now = document.getElementById("rvsteer"); if (now) { now.value = ""; now.blur(); }
+    msg.className = "msg ok"; msg.textContent = "↪ Sent. Claude is continuing with your guidance.";
+    rv.attempt = null; rv.tab = "log";
+    await refreshRun(true);
+  } catch (e) { msg.className = "msg err"; msg.textContent = e.message; if (b) b.disabled = false; }
+}
+document.getElementById("rvside").addEventListener("keydown", e => {  // Ctrl+Enter sends a steer
+  if (e.target.id !== "rvsteer" || e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  sendSteer(document.querySelector("[data-steer]")?.dataset.steer || "only");
+});
+document.getElementById("rvside").addEventListener("focusout", e => {  // redraw once the user stops typing
+  if (e.target.id === "rvsteer") { rv && (rv.steerDraft = e.target.value); setTimeout(() => rv?.run && document.activeElement?.id !== "rvsteer" && renderRunSide(), 0); }
 });
 document.getElementById("rvstop").addEventListener("click", async e => {
   const b = e.currentTarget;
@@ -2677,6 +2780,7 @@ const ENT = {
   runs:        { name: "Runs", one: "run", def: "A run is one time a workflow was carried out. It keeps what every step did, the files it changed, and what it cost." },
   helpers:     { name: "Helpers", one: "helper", def: "A helper is a specialist role, such as “tester” or “technical writer”, with its own instructions and tools. A workflow step can hand its work to a helper." },
   templates:   { name: "Step templates", one: "step template", def: "A step template is a ready-made step, such as “Plan” or “Test & fix”, that you can add to any workflow in one click and then adjust." },
+  models:      { name: "AI models", def: "Which AI does the work. Claude is built in. You can also use Google's Gemini, OpenAI's GPT, or free local models that run on your own computer (Ollama), for a whole workflow or for one step." },
   permissions: { name: "Permissions", def: "Rules for what Claude may do on this computer without asking you first, such as changing files or running commands." },
 };
 const MODE_WORD = Object.fromEntries(MODES);
@@ -2701,6 +2805,7 @@ function go(p) {
   for (const s of document.querySelectorAll(".page")) s.classList.toggle("on", s.dataset.page === p);
   if (p === "live") { resize(); if (!userMoved) clusterKey = ""; }  // re-fit: the map was sized while hidden
   if (p === "permissions" && !perms) loadPerms();
+  if (p === "models") loadModels();  // something may have been installed since
   renderPage(true);
 }
 document.getElementById("rail").addEventListener("click", e => { const b = e.target.closest("[data-go]"); if (b) go(b.dataset.go); });
@@ -2719,6 +2824,7 @@ function renderPage(force) {
   else if (page === "helpers" && force) renderHelpers();
   else if (page === "templates" && force) renderTemplates();
   else if (page === "permissions" && force) renderPerms();
+  else if (page === "models" && force) renderModels();
 }
 function badge(k, n, alert) { const b = document.getElementById("rb-" + k); if (!b) return; b.hidden = !n; b.textContent = n; b.classList.toggle("alert", !!alert); }
 function renderChrome() {
@@ -2764,6 +2870,7 @@ function renderHome() {
       ${tile("helpers", helpers.length, mine ? mine + " made by you" : "built-in roles", true)}
       ${tile("templates", tpl.length, myTpl ? myTpl + " made by you" : "ready-made steps", true)}
       ${tile("permissions", "", "what Claude may do", false)}
+      ${tile("models", MODEL_STATUS ? MODEL_STATUS.filter(p => p.ready).length : "", "ready to use", false)}
     </div>
     ${runs.length ? `<div class="section"><h2>Recent runs</h2><span class="hint"></span><button class="btn sm" data-go="runs">See all</button></div>
       <div class="list">${runs.slice(0, 5).map(runRow).join("")}</div>` : ""}`;
@@ -2825,7 +2932,7 @@ function runRow(r) {
   const t = now(), took = (r.ended || t) - r.started, steps = new Set(r.attempts.map(a => a.step)).size;
   return `<div class="lrow2 click" data-openrun="${esc(r.id)}">${stIcon(normSt(r.status))}
     <div class="main"><div class="nm2">${esc(r.name)}</div><div class="sub2">${day(r.started)} · ${steps} step${steps === 1 ? "" : "s"} ran${r.error ? " · " + esc(r.error) : ""}</div></div>
-    <div class="col">${dur(took)}</div><div class="col">${fmtMoney(r.cost)}</div>${runTag(r)}
+    <div class="col">${dur(took)}</div><div class="col">${fmtMoney(r.cost)}</div>${r.external && (r.status === "running" || r.status === "waiting") ? `<span class="tag" title="Started with agent-graph run">⌨ in a terminal</span>` : ""}${runTag(r)}
     ${r.status === "waiting" ? `<button class="btn pri" data-openrun="${esc(r.id)}">Review now</button>` : ""}
     ${r.status === "running" ? `<button class="btn ${runsUi.arm === r.id ? "danger" : ""}" data-rstop="${esc(r.id)}">${runsUi.arm === r.id ? "Click again to stop" : "Stop"}</button>` : ""}</div>`;
 }
@@ -3019,7 +3126,7 @@ function openTemplateEditor(key, t, mode) {
     <label class="chk reviewtoggle"><input type="checkbox" id="te-review" ${t.review ? "checked" : ""}><span><b>Pause for my review</b> after this step<br><span class="hint">You check the result, then approve, ask for changes or stop.</span></span></label>
     <details class="adv"><summary>Advanced options</summary><div class="form">
       <div class="row2"><label class="f">Retries <span class="hint">tries again if it fails</span><input id="te-retries" type="number" min="0" max="10" value="${+t.retries || 0}"></label>
-        <label class="f">AI model<select id="te-model">${opts([["", "Same as the workflow"], ...MODELS.slice(1)], t.model || "")}</select></label></div>
+        <label class="f">AI model<select id="te-model">${modelOpts(t.model || "", "Same as the workflow")}</select></label></div>
       <label class="f">Success check <span class="hint">optional terminal command that must pass, such as your tests</span><input id="te-check" value="${esc(t.check || "")}" placeholder="e.g. npm test"></label>
       <label class="f">Helpers <span class="hint">comma separated; this step hands its work to them</span><input id="te-agents" list="te-helpers" value="${esc((t.agents || []).join(", "))}" placeholder="e.g. qa-engineer">
         <datalist id="te-helpers">${libAgents().map(a => `<option value="${esc(a.name)}">`).join("")}</datalist></label></div></details>
@@ -3109,6 +3216,7 @@ permEl.addEventListener("change", e => { if (perms && e.target.id === "pmode") {
 document.getElementById("mfoot").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   if (b.id === "hesave") saveHelper();
+  if (b.id === "nwgo") newWorkflowGo();
   if (b.id === "tesave") saveTemplate();
 });
 
@@ -3183,12 +3291,201 @@ setInterval(() => {  // follow a working session; finished ones don't change
   if (WORKING.has(n?.status) || t - (slog.at || 0) > 10000) { slog.at = t; loadSessionLog(false); }
 }, 1500);
 
+// ---- new workflow: ask where it should work before anything else ------------------------------
+const nw = { checked: null, sample: null };
+async function openNewWorkflow(sampleId) {
+  nw.checked = null;
+  const samples = DEFAULTS.samples || [];
+  nw.sample = samples.find(x => x.id === sampleId) || null;
+  openModal("New workflow", `<div class="form">
+    <div class="defbox" style="--ec:var(--e-workflows)">${icon("workflows")}<span>${ENT.workflows.def}</span></div>
+    ${samples.length ? `<div class="f" style="font-size:12px;color:var(--muted);font-weight:600">Start with
+      <div class="chips" id="nw-samples" style="margin-top:6px">${[{ id: "", icon: "＋", name: "Blank" }, ...samples].map(x =>
+        `<button class="chip" type="button" data-nwsample="${esc(x.id)}">${esc(x.icon || "")} ${esc(x.name)}</button>`).join("")}</div>
+      <div id="nw-sampleinfo"></div></div>` : ""}
+    <label class="f">What is it for? <span class="hint">a short name, so you can find it later</span>
+      <input id="nw-name" placeholder="e.g. Fix failing tests" autocomplete="off"></label>
+    <div class="f" style="font-size:12px;color:var(--muted);font-weight:600;display:flex;flex-direction:column;gap:4px">Which project folder should Claude work in?
+      <span class="hint">Claude reads and changes files only inside this folder. The workflow is saved there too, in .claude/workflows.</span>
+      <span style="display:flex;gap:8px;margin-top:4px"><input id="nw-cwd" placeholder="~/Desktop/code/my-app" autocomplete="off">
+        <button class="btn" type="button" id="nw-browse" style="white-space:nowrap;flex-shrink:0">📁 Browse…</button></span>
+      <div id="nw-status" class="hint" style="min-height:18px"></div></div>
+    <div><div class="hint" style="margin-bottom:6px">Recent project folders</div><div class="chips" id="nw-recent"><span class="hint">Loading…</span></div></div>
+  </div>`, `<span class="msg"></span><button class="btn" id="wfcancel">Cancel</button><button class="btn pri" id="nwgo">Continue →</button>`);
+  nwShowSample();
+  document.getElementById(nw.sample?.ask ? "nw-task" : "nw-name").focus();
+  try {
+    const f = await api("/api/folders");
+    const el = document.getElementById("nw-recent"); if (!el) return;
+    el.innerHTML = f.recent.map(p => `<button class="chip" type="button" data-nwpick="${esc(p)}" title="${esc(p)}">📁 ${esc(p.replace(/^~\/(Desktop\/)?(code\/)?/, ""))}</button>`).join("")
+      || `<span class="hint">None yet. Browse to a folder, or type its path.</span>`;
+  } catch { const el = document.getElementById("nw-recent"); if (el) el.innerHTML = ""; }
+}
+function nwShowSample() {  // highlight the choice; show the sample's description and its question
+  for (const c of document.querySelectorAll("#nw-samples .chip")) c.classList.toggle("on", c.dataset.nwsample === (nw.sample?.id || ""));
+  const info = document.getElementById("nw-sampleinfo"); if (!info) return;
+  const x = nw.sample, name = document.getElementById("nw-name");
+  if (name && (!name.value || name.dataset.auto)) { name.value = x ? x.name : ""; name.dataset.auto = x ? "1" : ""; }
+  info.innerHTML = !x ? "" : `<div class="hint" style="margin:8px 0 4px;font-weight:400">${esc(x.description || "")}
+      <br>Steps: ${x.steps.map(st => (st.review ? "👤 " : "") + esc(st.name)).join(" → ")}</div>
+    ${x.ask ? `<label class="f" style="margin-top:8px">${esc(x.ask)}
+      <textarea id="nw-task" rows="3" style="font-weight:400" placeholder="${esc(x.example || "")}"></textarea></label>` : ""}`;
+}
+async function nwCheck(create) {  // show whether the folder exists; offer to create it
+  const input = document.getElementById("nw-cwd"), st = document.getElementById("nw-status");
+  const path = input.value.trim();
+  nw.checked = null;
+  for (const c of document.querySelectorAll("#nw-recent .chip")) c.classList.toggle("on", c.dataset.nwpick === path);
+  if (!path) { st.textContent = ""; return null; }
+  try {
+    const d = await api("/api/folders/check", { path, create: !!create });
+    if (document.getElementById("nw-cwd")?.value.trim() !== path) return null;  // typed on meanwhile
+    nw.checked = d.exists ? d.path : null;
+    st.innerHTML = d.exists ? `<span style="color:var(--done)">✓ Found${d.git ? " · a git project" : ""} · ${d.entries} item${d.entries === 1 ? "" : "s"} inside</span>`
+      : d.isFile ? `<span style="color:var(--failed)">That's a file, not a folder.</span>`
+      : `<span style="color:var(--busy)">This folder doesn't exist yet.</span> <button class="linkbtn" type="button" id="nw-create">Create it</button>`;
+    return d;
+  } catch (e) { st.innerHTML = `<span style="color:var(--failed)">${esc(e.message)}</span>`; return null; }
+}
+let nwTimer = 0;
+document.getElementById("mbody").addEventListener("input", e => {
+  if (e.target.id === "nw-name") e.target.dataset.auto = "";  // typed by the user: a sample choice won't overwrite it
+  if (e.target.id === "nw-cwd") { clearTimeout(nwTimer); nwTimer = setTimeout(() => nwCheck(false), 350); }
+});
+document.getElementById("mbody").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.target.id === "nw-name" || e.target.id === "nw-cwd")) { e.preventDefault(); newWorkflowGo(); }
+});
+document.getElementById("mbody").addEventListener("click", async e => {
+  const smp = e.target.closest("[data-nwsample]");
+  if (smp) { nw.sample = (DEFAULTS.samples || []).find(x => x.id === smp.dataset.nwsample) || null; return nwShowSample(); }
+  const pick = e.target.closest("[data-nwpick]");
+  if (pick) { document.getElementById("nw-cwd").value = pick.dataset.nwpick; return nwCheck(false); }
+  if (e.target.id === "nw-create") return nwCheck(true);
+  if (e.target.id === "nw-browse") {
+    const b = e.target; b.disabled = true; b.textContent = "Choosing…";
+    try {
+      const p = await api("/api/folders/pick", { start: document.getElementById("nw-cwd").value.trim() || "~/Desktop/code" });
+      if (p) { document.getElementById("nw-cwd").value = p; await nwCheck(false); }
+    } catch (err) { document.getElementById("nw-status").textContent = err.message; }
+    b.disabled = false; b.textContent = "📁 Browse…";
+  }
+});
+async function newWorkflowGo() {
+  const cwd = document.getElementById("nw-cwd").value.trim();
+  if (!cwd) { setMsg("Choose the project folder first."); return document.getElementById("nw-cwd").focus(); }
+  const d = nw.checked === null ? await nwCheck(false) : { exists: true, path: nw.checked };
+  if (!d?.exists) { setMsg("Pick a folder that exists, or create it."); return; }
+  const name = document.getElementById("nw-name").value.trim();
+  const task = document.getElementById("nw-task")?.value.trim() || "";
+  const sample = nw.sample;
+  closeModal();
+  openEditor(null, { name, cwd: d.path, sample, task });
+}
+// the builder's 📁 button: change the folder with the same chooser
+document.getElementById("bbrowse").addEventListener("click", async e => {
+  const b = e.currentTarget, input = document.getElementById("bcwd"); b.disabled = true;
+  try {
+    const p = await api("/api/folders/pick", { start: input.value.trim() || "~/Desktop/code" });
+    if (p && draft) { input.value = p; draft.cwd = p; }
+  } catch (err) { document.getElementById("bmsg").textContent = err.message; }
+  b.disabled = false;
+});
+
+// ---- AI models: Claude, Gemini, GPT and local models (Ollama) ---------------------------------------
+let MODEL_STATUS = null;
+const MODEL_PROVIDERS = ["gemini", "gpt", "ollama"];
+const provider = id => (MODEL_STATUS || []).find(p => p.id === id);
+async function loadModels() {
+  try { MODEL_STATUS = await api("/api/models"); } catch { return; }
+  badge("models", MODEL_STATUS.filter(p => p.installed && !p.ready).length, true);
+  if (page === "models") renderModels();
+  if (draft && builder.classList.contains("on")) {  // refresh the builder's choices without losing the selection
+    const bm = document.getElementById("bmodel"); bm.innerHTML = modelOpts(draft.model || "", "Default (Claude)"); bm.value = draft.model || "";
+    if (sel?.type === "step") renderInspector();
+  }
+}
+function modelLabel(v) {  // "gpt:gpt-5" -> "GPT · gpt-5", "ollama:qwen3-coder" -> "qwen3-coder (local)"
+  if (!v) return "";
+  if (v === "gemini" || v === "gpt") v += ":";  // written by hand in YAML: that tool's default model
+  const i = v.indexOf(":"), pr = v.slice(0, i), name = v.slice(i + 1);
+  if (i < 0 || !MODEL_PROVIDERS.includes(pr)) return v;
+  if (pr === "ollama") return name.replace(/:latest$/, "") + " (local)";
+  return (pr === "gpt" ? "GPT" : "Gemini") + (name ? " · " + name : "");
+}
+function modelOpts(current, firstLabel) {  // <select> options grouped by provider; ones not set up are shown but disabled
+  current = current || "";
+  if (current === "gemini" || current === "gpt") current += ":";  // hand-written YAML form of "its default model"
+  const seen = new Set();
+  const o = (v, l, off) => { seen.add(v); return `<option value="${esc(v)}" ${v === current ? "selected" : ""} ${off ? "disabled" : ""}>${esc(l)}</option>`; };
+  let html = o("", firstLabel) + `<optgroup label="Claude">${MODELS.slice(1).map(([v, l]) => o(v, l)).join("")}</optgroup>`;
+  for (const id of MODEL_PROVIDERS) {
+    const p = provider(id), ready = !!p?.ready;
+    const items = id === "ollama"
+      ? (p?.models || []).map(m => ["ollama:" + m.replace(/:latest$/, ""), m.replace(/:latest$/, "") + " · on this computer"])
+      : [[id + ":", `${p?.name || id} · its default model`], ...(p?.extra || []).map(m => [id + ":" + m, `${p.name} · ${m}`])];
+    const name = p?.name || (id === "gpt" ? "GPT" : id === "gemini" ? "Gemini" : "Local models (Ollama)");
+    html += `<optgroup label="${esc(name + (ready ? "" : " · not set up yet (see AI models)"))}">` +
+      (items.length && ready ? items.map(([v, l]) => o(v, l)).join("") : o("~" + id, ready ? "No models yet" : "Set it up on the AI models page", true)) + `</optgroup>`;
+  }
+  if (current && !seen.has(current)) html += o(current, modelLabel(current) + " (not available here)");
+  return html;
+}
+function cmdHtml(text) {  // `commands` become copyable code; a bare install line is one command
+  const one = !text.includes("`");
+  const code = c => `<span class="cmd"><code>${esc(c)}</code><button class="btn sm" type="button" data-copy="${esc(c)}" title="Copy">Copy</button></span>`;
+  if (one) { const [c, ...note] = text.split(/\s{3,}/); return code(c.trim()) + (note.length ? `<div class="hint">${esc(note.join(" "))}</div>` : ""); }
+  return `<span>${text.split("`").map((part, i) => i % 2 ? code(part) : esc(part)).join("")}</span>`;
+}
+function renderModels() {
+  const el = document.getElementById("pg-models");
+  const st = MODEL_STATUS;
+  el.innerHTML = ehead("models", `<button class="btn lg" id="mcheck">↻ Check again</button>`) + (!st ? `<div class="empty">Checking what's installed…</div>` : `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(400px,1fr))">${st.map(p => {
+      const tag = p.ready ? `<span class="tag ok">✓ Ready</span>` : p.installed ? `<span class="tag run">Needs setup</span>` : `<span class="tag">Not installed</span>`;
+      const todo = !p.installed ? [["1", "Install it", p.install], ["2", "Then", p.signin]] : !p.ready ? [["→", "To finish setup", p.problem]] : [];
+      const chips = p.id === "claude" ? p.models.map(m => `<span class="s">${esc(m)}</span>`).join("")
+        : p.id === "ollama" ? (p.models.map(m => `<span class="s">${esc(m.replace(/:latest$/, ""))}</span>`).join("") || "")
+        : [`<span class="s">its default model</span>`, ...p.extra.map(m => `<span class="s">${esc(m)}<button class="linkbtn" data-mdel="${esc(p.id)}" data-m="${esc(m)}" title="Remove" aria-label="Remove ${esc(m)}" style="margin-left:4px;text-decoration:none">×</button></span>`)].join("");
+      return `<div class="ecard" style="--ec:var(--e-models)">
+        <div class="top"><div class="eicon sm">${icon("models")}</div><div class="ttlbox"><div class="ttl">${esc(p.name)}</div>
+          <div class="meta">${esc(p.maker)}${p.version ? " · " + esc(p.version) : ""}</div></div>${tag}</div>
+        <div class="desc" style="display:block">${esc(p.about)}</div>
+        ${todo.map(([n, t, txt]) => `<div class="mstep"><b>${n} ${t}</b>${cmdHtml(txt)}</div>`).join("")}
+        ${p.ready && chips ? `<div class="hint">Models you can pick</div><div class="flowline">${chips}</div>` : ""}
+        ${p.ready && (p.id === "gemini" || p.id === "gpt") ? `<div class="addrow"><input data-maddin="${esc(p.id)}" placeholder="Add a model name, e.g. ${p.id === "gpt" ? "gpt-5" : "gemini-2.5-pro"}">
+          <button class="btn" data-madd="${esc(p.id)}">Add</button></div><div class="hint">Use the exact name the ${esc(p.cli)} tool expects. Leave it out to use its default.</div>` : ""}
+        ${p.ready && p.id === "ollama" ? `<div class="hint">More local models: <code>ollama pull &lt;name&gt;</code>, then Check again.</div>` : ""}
+        <div class="hint" style="margin-top:auto">More: ${esc(p.docs)}</div></div>`;
+    }).join("")}</div>
+    <div class="defbox" style="--ec:var(--e-models);margin-top:18px">${icon("models")}<span><b>Using another model.</b> In the workflow builder, choose it under <b>AI model</b> (top bar) for the whole workflow,
+      or for one step under <b>Advanced options</b>. Gemini and GPT steps run through their own tools: they can read and edit files in the project folder, but helpers are given to them as instructions instead of separate agents, and their cost isn't shown here.
+      Local models are free, private, and use Claude Code's tools; they work best with a model made for coding.</span></div>`);
+}
+document.getElementById("pg-models").addEventListener("click", async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.id === "mcheck") { MODEL_STATUS = null; renderModels(); return loadModels(); }
+  if (b.dataset.copy) {
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Copied"; }
+    catch { const c = b.previousElementSibling; const r = document.createRange(); r.selectNodeContents(c); getSelection().removeAllRanges(); getSelection().addRange(r); b.textContent = "Press Ctrl+C"; }
+    return setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  }
+  const pid = b.dataset.madd || b.dataset.mdel; if (!pid) return;
+  const p = provider(pid); let list = [...(p?.extra || [])];
+  if (b.dataset.madd) { const v = document.querySelector(`[data-maddin="${pid}"]`).value.trim(); if (!v) return; list.push(v); }
+  else list = list.filter(m => m !== b.dataset.m);
+  try { MODEL_STATUS = await api("/api/models/extra", { provider: pid, models: list }); renderModels(); } catch (err) { alert(err.message); }
+});
+document.getElementById("pg-models").addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.dataset.maddin) document.querySelector(`[data-madd="${e.target.dataset.maddin}"]`)?.click();
+});
+loadModels();
+
 // ---- help: the same definitions as the pages --------------------------------------------------
 function openHelp() {
   const row = k => `<dt style="display:flex;gap:10px;align-items:center"><span class="eicon sm" style="--ec:var(--e-${k})">${icon(k)}</span>${ENT[k].name}</dt><dd style="margin-left:44px">${ENT[k].def}</dd>`;
   openModal("How it works", `<p style="margin-top:0">Agent Graph shows what Claude is doing on this computer and lets you set up jobs for it.
     Every part of the app is one of these, and each has its own page in the menu on the left:</p>
-    <dl class="glossary">${["sessions", "workflows", "runs", "helpers", "templates", "permissions", "live"].map(row).join("")}
+    <dl class="glossary">${["sessions", "workflows", "runs", "helpers", "templates", "permissions", "models", "live"].map(row).join("")}
       <dt>👤 Review</dt><dd>A workflow step can pause so you can check what Claude made. You then approve it, ask for changes, or stop. Anything waiting for you appears on <b>Home</b>.</dd></dl>
     <p class="hint" style="margin-top:16px">On the live map, drag the background to move around, scroll to zoom, and press <b>0</b> to fit everything. Press <b>Esc</b> to go back or close.</p>`,
     `<button class="btn pri" id="wfcancel">Got it</button>`);

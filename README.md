@@ -11,6 +11,10 @@ Runs on **macOS, Linux and Windows**.
 - **Stop a running session** from the graph
 - **Workflow builder**: steps run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible
 - **Review checkpoints**: a step can pause for your approval or feedback before the workflow goes on
+- **Steering**: send Claude guidance while a step runs (it continues the same conversation with your message), or redo a finished step with your feedback
+- **Sample workflows**: ready-made workflows (fix a bug, build a feature, explain a project, security check, …) to start from
+- **Command line**: list, run and validate workflows from the terminal, by name or straight from a workflow YAML file (`agent-graph run flow.yaml`, `agent-graph validate flows/*.yaml`), handy for scripts and CI
+- **Other AI models**: run a workflow, or a single step, on Google Gemini, OpenAI GPT, or a free local model through Ollama, alongside Claude
 - **Agent library**: ready-made subagent roles (product owner, architect, reviewer, tester, …) you can drop into steps
 - **Permissions editor** for `~/.claude/settings.json`
 - Workflows are plain YAML in `<project>/.claude/workflows/`, so they're versioned with your code and editable by hand
@@ -156,6 +160,132 @@ The server listens only on `127.0.0.1`, and every API call needs a random token 
 
 Without a native window, the app opens in your default browser and works the same way.
 
+## Run workflows from the terminal
+
+Every workflow can also run from the command line: the ones you built in the app, and any workflow YAML file. The terminal shows live progress, and the run is saved like any other, so it also shows up (live) on the app's **Runs** page.
+
+```sh
+agent-graph list                                  # workflows the app knows: name, id, steps and project folder
+agent-graph run "Fix a bug"                       # run one by name, the start of its name, or its id
+agent-graph run ./flows/nightly.yaml              # run a workflow file
+agent-graph run ./flows/nightly.yaml -C ~/code/app   # ...in another project folder
+agent-graph run fix-a-bug --yes                   # approve review points automatically (scripts, CI)
+agent-graph validate ./flows/*.yaml               # check workflow files without running them
+agent-graph runs                                  # recent runs: id, when, status, duration, cost
+```
+
+| Option | For |
+|---|---|
+| `run <workflow>` | A workflow file (anything ending in `.yaml`/`.yml`, or a path), or the id, exact name or start of the name of a workflow the app knows (not case-sensitive). If several match, it lists them so you can use the id. |
+| `-C`, `--folder <dir>` | Run (or validate) in this project folder instead of the workflow's `cwd`. Handy for keeping one workflow file and running it on many projects. |
+| `-y`, `--yes` | Approve every review point without asking. |
+| `-q`, `--quiet` | Don't print the final step's result at the end. |
+| `--json` | Print a JSON summary (status, cost, each step's output) instead of progress. Also works with `list` and `runs`. |
+| `runs -n 30` | How many recent runs to list (default 15). |
+
+**Review points.** When a step pauses for review, the terminal shows that step's result and asks:
+
+```
+👤 “Find the cause” is done and waiting for your review.
+Approve and continue [a], request changes [c], or stop [s]?
+```
+
+- `a` continues. You can add optional notes for the next step.
+- `c` asks what should change, then redoes the step with your feedback.
+- `s` stops the run.
+
+If nobody can answer (no terminal, for example in CI) and `--yes` isn't set, the run stops at the review point and exits with code `3`.
+
+### Workflow files
+
+A workflow file is the same YAML the app saves in `<project>/.claude/workflows/`. You can keep it anywhere: in a repo, in a shared folder of team workflows, or next to a script. The smallest useful one:
+
+```yaml
+name: Say hello
+steps:
+  - name: Hello
+    prompt: Write hello.txt containing a friendly greeting.
+  - name: Check
+    run: test -f hello.txt        # a shell step: no AI, no cost
+```
+
+Which folder it runs in:
+
+1. `--folder` / `-C`, if given.
+2. Otherwise `cwd:` in the file. A relative `cwd` (such as `cwd: ..`) is relative to the file, not to where you run the command.
+3. Otherwise the project the file belongs to, if it's inside `<project>/.claude/workflows/`; else the file's own folder.
+
+The other settings are the ones the builder writes (open any workflow with **Open as text** to see them all): `model`, `permissionMode`, `allowedTools`, `disallowedTools`, `passOutput`, `maxBudgetUsd`, `agents`, and per step `prompt` or `run`, `retries`, `check`, `model`, `review`, `agents`, `dependsOn`, `onSuccess`, `onFailure` and `loopBack`. Steps run one after another unless `dependsOn` says otherwise. Replaying a step of a file run from the app reads the file again.
+
+### Check workflows: `validate`
+
+`validate` loads workflows the same way `run` does, but doesn't run anything:
+
+```sh
+agent-graph validate                       # every workflow the app knows
+agent-graph validate flows/*.yaml          # these files
+agent-graph validate "Fix a bug" --strict  # warnings count as errors too
+```
+
+```
+✓ Say hello  ~/flows/hello.yaml · 2 steps · runs in ~/flows
+⚠ Nightly  ~/flows/nightly.yaml · 3 steps · runs in ~/code/app
+    warning: step 1 (“Plan”): unknown setting “promt” (did you mean “prompt”?)
+    warning: workflow: model “gemini” can't run on this computer yet: Gemini isn't installed. Install it with: …
+✗ ~/flows/broken.yaml
+    error: line 5, column 1: found unexpected end of stream
+2 of 3 valid (2 warning(s))
+```
+
+- **Errors** stop a workflow from loading or running. Examples: invalid YAML (with line and column), a missing `name` or `steps`, a step with no prompt or command, a missing `cwd` folder, `dependsOn`/`loopBack` pointing at a step that doesn't exist, a dependency loop, or an undefined helper.
+- **Warnings** are probably mistakes, but the workflow would still run:
+  - unknown settings, with a "did you mean" guess
+  - a model that isn't set up on this computer
+  - an unfilled `<describe …>` or `{task}` placeholder
+  - a helper no step uses
+
+Exit code: `0` when everything is valid; `1` when anything has an error, or a warning with `--strict`. `--json` prints the full report. To check workflows in CI:
+
+```sh
+agent-graph validate .claude/workflows/*.yaml --strict
+```
+
+**Stopping.** Press `Ctrl+C` to stop a run cleanly. You can also press **Stop** on the run in the app: it asks the terminal to stop, as if you had pressed `Ctrl+C` there (macOS and Linux). Reviews and steering of a terminal run happen in that terminal. Once it has finished, you can replay or steer its steps from the app.
+
+**Exit codes**, for scripts:
+
+| Code | Meaning |
+|---|---|
+| `0` | Finished successfully |
+| `1` | A step failed, or the workflow wasn't found |
+| `2` | Stopped (`Ctrl+C`, Stop in the app, or `s` at a review) |
+| `3` | Paused for review, but there was no terminal to answer it (use `--yes`) |
+
+Example: run a workflow every night with cron, and keep the log:
+
+```sh
+0 2 * * *  cd ~/code/my-app && agent-graph run "Review & tidy up code" --yes >> ~/agent-graph-nightly.log 2>&1
+```
+
+## AI models: Claude, Gemini, GPT and local models
+
+Steps run on Claude by default. You can also use other models for a whole workflow (the **AI model** menu in the builder's top bar) or for one step (the step's **Advanced options**). The app's **AI models** page shows what's installed and ready. If something isn't, it shows how to set it up, with commands you can copy. Click **Check again** after installing.
+
+| Provider | Runs through | Set up |
+|---|---|---|
+| **Claude** (default) | Claude Code: `claude -p` | Already required by the app. |
+| **Gemini** (Google) | [Gemini CLI](https://github.com/google-gemini/gemini-cli): `gemini` | `npm install -g @google/gemini-cli`, then run `gemini` once and sign in (or set `GEMINI_API_KEY`). |
+| **GPT** (OpenAI) | [Codex CLI](https://github.com/openai/codex): `codex exec` | `npm install -g @openai/codex`, then run `codex` once and sign in with ChatGPT (or set `OPENAI_API_KEY`). |
+| **Local models** (Ollama) | Claude Code, pointed at [Ollama](https://ollama.com)'s Anthropic-compatible API | Install Ollama 0.14 or newer, start it (`ollama serve` or the desktop app), and download a model: `ollama pull qwen3-coder`. |
+
+How each one works in a workflow:
+
+- **Gemini and GPT** steps can read and edit files in the project folder. Gemini runs with `--yolo`; Codex runs with `--full-auto`, which `plan` mode makes read-only. They have no subagents, so a step's helpers are given to them as role instructions in the prompt. Steering a running step restarts it with your guidance added (Claude continues the same conversation instead). Their cost isn't reported, so it shows as $0.00.
+- **Local models** keep everything Claude Code offers (tools, helpers, steering) and cost nothing. All of Claude Code's model roles map to the model you pick. Pick one that is good at coding and tool use; small models may struggle with multi-step work. To use Ollama on another machine, set `OLLAMA_HOST` (for example `OLLAMA_HOST=http://192.168.1.20:11434`).
+- If a step's model isn't available when it runs (tool not installed, Ollama not running, model not downloaded), the step fails straight away with a message saying what to do.
+
+In workflow YAML, `model:` (for the workflow or one step) is `haiku`, `sonnet`, `opus` or `fable` for Claude; `gemini` or `gemini:<model>`; `gpt` or `gpt:<model>`; or `ollama:<model>`, for example `ollama:qwen3-coder`. A plain `gemini` or `gpt` means that tool's default model. Don't write `gemini:` with nothing after the colon by hand: that isn't valid YAML unless it's quoted. Model names you add on the AI models page are offered in the menus.
+
 ## Platform notes
 
 - **Shell steps** (`run:`) and **checks** (`check:`) run with `bash -lc` in the workflow folder: bash on macOS/Linux, Git Bash on Windows (found via `CLAUDE_CODE_GIT_BASH_PATH`, `git`, or the default install paths). If there's no bash on Windows, they fall back to `cmd.exe`.
@@ -171,7 +301,7 @@ Without a native window, the app opens in your default browser and works the sam
 | Your workflows | `<project>/.claude/workflows/<id>.yaml` |
 | Your agent and step additions | `~/.config/claude-agent-graph/agents.yaml`, `steps.yaml` |
 | Run history and logs | `~/.config/claude-agent-graph/runs/` |
-| Built-in agent library and step templates | `agent_graph/defaults/` |
+| Built-in agent library, step templates and sample workflows | `agent_graph/defaults/` (`agents.yaml`, `steps.yaml`, `samples.yaml`) |
 
 On Windows, `~` means your user folder (`C:\Users\<you>`).
 

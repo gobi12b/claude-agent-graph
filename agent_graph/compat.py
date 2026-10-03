@@ -41,6 +41,16 @@ def terminate(pid):
         os.kill(pid, signal.SIGTERM)
 
 
+def interrupt(pid):
+    """Ask another process to stop as if Ctrl+C was pressed in its terminal."""
+    if WINDOWS:  # no portable way to send Ctrl+C to another console
+        raise ValueError("Stop it in its terminal with Ctrl+C.")
+    try:
+        os.kill(int(pid), signal.SIGINT)
+    except ProcessLookupError:
+        raise ValueError("That run's terminal is already closed.")
+
+
 def pid_alive(pid):
     pid = int(pid)
     if WINDOWS:  # os.kill(pid, 0) would terminate the process on Windows

@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-from . import compat, wfstore
+from . import compat, providers, wfstore
 from .watcher import parse_ts
 
 CONFIG_DIR = os.path.expanduser("~/.config/claude-agent-graph")
@@ -101,6 +101,91 @@ def list_workflows(errors=None):
     if errors is not None:
         errors.extend(errs)
     return out
+
+
+# ---- workflow files given on the command line ------------------------------------------------------------
+WF_KEYS = {"id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
+           "maxBudgetUsd", "agents", "steps", "updated", "file"}
+STEP_KEYS = {"id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
+             "onSuccess", "onFailure", "loopBack", "agents", "review"}
+AGENT_KEYS = {"name", "description", "prompt", "tools", "model"}
+
+
+def read_file(path, folder=None):
+    """A workflow from any YAML file, not only the ones the app knows. Returns (raw dict, path).
+    cwd: `folder` if given; else the file's cwd, relative to the file; else its project (…/.claude/workflows/x.yaml)
+    or the file's own folder."""
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise ValueError(f"No such file: {path}")
+    stem = os.path.splitext(os.path.basename(path))[0]
+    wid = stem if wfstore.ID_RE.match(stem) else wfstore._slug(stem)
+    try:
+        with open(path) as f:
+            doc = wfstore._yaml().load(f)
+    except wfstore.MarkedYAMLError as exc:
+        mark = exc.problem_mark
+        raise ValueError(f"line {mark.line + 1}, column {mark.column + 1}: {exc.problem}" if mark else str(exc))
+    except UnicodeDecodeError:
+        raise ValueError("The file isn't text (expected a YAML workflow).")
+    wf = wfstore.from_doc(doc, wid)
+    here = os.path.dirname(path)
+    if folder:
+        wf["cwd"] = os.path.abspath(os.path.expanduser(folder))
+    elif wf.get("cwd"):
+        cwd = os.path.expanduser(str(wf["cwd"]))
+        wf["cwd"] = cwd if os.path.isabs(cwd) else os.path.normpath(os.path.join(here, cwd))
+    else:
+        parts = here.split(os.sep)
+        wf["cwd"] = os.sep.join(parts[:-2]) if parts[-2:] == [".claude", "workflows"] else here
+    wf["file"], wf["updated"] = path, os.path.getmtime(path)
+    return wf, path
+
+
+def load_file(path, folder=None):
+    """A validated, ready-to-run workflow from a YAML file. Raises ValueError with a readable message."""
+    wf, _ = read_file(path, folder)
+    return validate(wf)
+
+
+def lint(raw, wf):
+    """Things that don't stop a workflow from loading but are probably mistakes. raw: as written; wf: validated."""
+    import difflib
+    warn = []
+
+    def unknown(keys, allowed, where):
+        for k in keys:
+            if k not in allowed:
+                guess = difflib.get_close_matches(k, allowed, n=1)
+                warn.append(f"{where}: unknown setting “{k}”" + (f" (did you mean “{guess[0]}”?)" if guess else " (it's ignored)"))
+
+    unknown(raw.keys(), WF_KEYS, "workflow")
+    for a in raw.get("agents") or []:
+        if isinstance(a, dict):
+            unknown(a.keys(), AGENT_KEYS, f"helper “{a.get('name', '?')}”")
+    for i, s in enumerate(raw.get("steps") or []):
+        if isinstance(s, dict):
+            unknown(s.keys(), STEP_KEYS, f"step {i + 1} (“{s.get('name', '?')}”)")
+    models = {("workflow", wf["model"])} | {(f"step “{s['name']}”", s["model"]) for s in wf["steps"] if s["model"]}
+    for where, model in sorted(models):
+        prov, name = providers.split(model)
+        if prov == "claude":
+            if name and name not in providers.CLAUDE_MODELS and not name.startswith("claude-"):
+                warn.append(f"{where}: “{name}” isn't a Claude model name I know (haiku, sonnet, opus, fable, or a full claude-… id)")
+            continue
+        try:
+            providers.check_ready(prov, name)
+        except ValueError as exc:
+            warn.append(f"{where}: model “{model}” can't run on this computer yet: {exc}")
+    for s in wf["steps"]:
+        hole = re.search(r"<describe [^<>\n]*>|\{task\}", s["prompt"])
+        if hole:
+            warn.append(f"step “{s['name']}”: still contains “{hole.group(0)}”, a part meant to be filled in")
+    used = {n for s in wf["steps"] for n in s["agents"]}
+    for a in wf["agents"]:
+        if a["name"] not in used:
+            warn.append(f"helper “{a['name']}” is defined but no step uses it")
+    return warn
 
 
 # ---- IDEs ------------------------------------------------------------------
@@ -495,37 +580,73 @@ class Runner:
         self.notify = notify  # wakes the SSE streams
         self.runs = {}
         self.procs = {}
+        self.proc_of = {}  # session -> its claude process, so one step can be interrupted to steer it
         self.waits = {}  # run id -> Event a paused run waits on for the user's review
         self.review_locks = {}  # run id -> Lock: parallel steps take turns asking for review
         self.log_cache = {}
         self.lock = threading.Lock()
-        for name in sorted(os.listdir(RUN_DIR))[-30:] if os.path.isdir(RUN_DIR) else []:
+        self.own = set()  # runs this process is running (the others are history, or live in another process)
+        self._disk = {}   # run id -> file time last read
+        self.sync_disk()
+
+    def sync_disk(self):
+        """Load saved runs, and follow runs that another process is running (`agent-graph run` in a terminal,
+        or the app while the terminal runs). Returns True when something changed."""
+        try:
+            names = sorted(n for n in os.listdir(RUN_DIR) if n.endswith(".json"))[-30:]
+        except OSError:
+            return False
+        changed = False
+        for name in names:
+            rid, path = name[:-5], os.path.join(RUN_DIR, name)
+            if rid in self.own:
+                continue
             try:
-                with open(os.path.join(RUN_DIR, name)) as f:
+                mtime = os.path.getmtime(path)
+                if self._disk.get(rid) == mtime:
+                    continue
+                with open(path) as f:
                     run = json.load(f)
+                self._disk[rid] = mtime
+                pid = run.get("pid")
                 if run["status"] in ("running", "waiting"):
-                    run["status"] = "stopped"  # app was closed mid-run
-                self.runs[run["id"]] = run
+                    if pid and pid != os.getpid() and compat.pid_alive(pid):
+                        run["external"] = True  # live in a terminal: follow it here, control it there
+                    else:
+                        run["status"] = "stopped"  # its process was closed mid-run
+                        run.pop("external", None)
+                with self.lock:
+                    self.runs[run["id"]] = run
                 self._graph_node(run)
                 self._relink(run)
+                changed = True
             except (OSError, ValueError, KeyError):
                 continue
+        return changed
+
+    def _external(self, run, what):
+        if run.get("external") and run["status"] in ("running", "waiting"):
+            raise ValueError(f"This run is running in a terminal (agent-graph run). {what}")
 
     def summary(self):
         with self.lock:
             return sorted((_copy(r) for r in self.runs.values()), key=lambda r: r["started"], reverse=True)[:30]
 
-    def start(self, wid):
-        wf = next((w for w in list_workflows() if w["id"] == wid), None)
-        if not wf:
-            raise ValueError("Workflow not found.")
+    def start(self, wid, wf=None):
+        """wf: an already-validated workflow (e.g. from a file given on the command line)."""
+        if wf is None:
+            wf = next((w for w in list_workflows() if w["id"] == wid), None)
+            if not wf:
+                raise ValueError("Workflow not found.")
         wf = validate(wf)
+        wid = wf["id"]
         rid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
         run = {"id": rid, "workflowId": wid, "name": wf["name"], "status": "running", "started": time.time(),
                "ended": None, "current": None, "cost": 0.0, "attempts": [], "stop": False, "cwd": wf["cwd"],
-               "plan": self._plan(wf)}
+               "plan": self._plan(wf), "pid": os.getpid(), "file": wf.get("file", "")}
         with self.lock:
             self.runs[rid] = run
+            self.own.add(rid)
         self._graph_node(run)
         with self.graph.lock:
             self.graph.edge("you", "w:" + rid, "prompt", time.time(), f"Started workflow “{wf['name']}”")
@@ -542,8 +663,9 @@ class Runner:
                  "kind": s.get("kind", "claude"), "run": s.get("run", "")}
                 for s in wf["steps"]]
 
-    def replay(self, rid, step_id, only=False):
-        """Run one step again (or from it to the end) inside the same run, with the current saved workflow."""
+    def replay(self, rid, step_id, only=False, resume=None):
+        """Run one step again (or from it to the end) inside the same run, with the current saved workflow.
+        resume: (session, message) to continue that step's conversation with the user's steering instead."""
         wf = None
         with self.lock:
             run = self.runs.get(rid)
@@ -552,6 +674,8 @@ class Runner:
             if run["status"] in ("running", "waiting"):
                 raise ValueError("This run is still going. Wait for it to finish, or stop it, before replaying a step.")
             wf = next((w for w in list_workflows() if w["id"] == run["workflowId"]), None)
+            if not wf and run.get("file") and os.path.isfile(run["file"]):  # a workflow file run from the command line
+                wf, _ = read_file(run["file"], run.get("cwd"))
             if not wf:
                 raise ValueError("The workflow was deleted, so its steps can't be replayed.")
             wf = validate(wf)
@@ -568,10 +692,14 @@ class Runner:
                     seed[a["step"]] = {"ok": True, "out": a.get("output", ""), "session": a["session"], "reason": "",
                                        "notes": rev.get("feedback", "") if rev.get("status") == "approved" else ""}
             run["replay"] = run.get("replay", 0) + 1
-            run.update(status="running", ended=None, stop=False, error="", plan=self._plan(wf))
+            run.update(status="running", ended=None, stop=False, error="", plan=self._plan(wf), pid=os.getpid())
+            run.pop("external", None)
+            self.own.add(rid)
+            run["_steer"] = {}
+            run["_resume"] = {step_id: resume} if resume else {}
         with self.graph.lock:
             self.graph.edge("you", "w:" + rid, "prompt", time.time(),
-                            f"Replayed “{wf['steps'][index[step_id]]['name']}”" + ("" if only else " to the end"))
+                            ("Steered" if resume else "Replayed") + f" “{wf['steps'][index[step_id]]['name']}”" + ("" if only else " to the end"))
             self.graph.version += 1
         threading.Thread(target=self._run, args=(wf, run), kwargs=dict(todo=redo, seed=seed), daemon=True).start()
         self._changed(run)
@@ -729,16 +857,68 @@ class Runner:
         with self.lock:
             run = self.runs.get(rid)
             wait = self.waits.get(rid)
+            if run:
+                self._external(run, "Answer its review there.")
             if not run or run["status"] != "waiting" or not wait:
                 raise ValueError("This run isn't waiting for a review.")
             run["_decision"] = (decision, feedback)
         wait.set()
+
+    def steer(self, rid, step_id, message, only=True):
+        """Redirect a step with the user's guidance, like steering Claude Code mid-task.
+        Running step: interrupt it and continue its conversation with the message (no retry is used up).
+        Step paused for review: same as "request changes". Finished run: redo the step (and optionally the
+        steps after it), continuing its conversation with the message."""
+        message = str(message or "").strip()
+        if not message:
+            raise ValueError("Write what Claude should do differently.")
+        with self.lock:
+            run = self.runs.get(rid)
+            if not run:
+                raise ValueError("Run not found.")
+            self._external(run, "Steer it after it finishes, or stop it and replay here.")
+            att = next((a for a in reversed(run["attempts"]) if a["step"] == step_id), None)
+            if att and att.get("kind") == "bash":
+                raise ValueError("Command steps can't be steered. Edit the command, then replay the step.")
+            status, proc = run["status"], None
+            if status == "waiting":
+                if not att or (att.get("review") or {}).get("status") != "pending":
+                    raise ValueError("The workflow is waiting for your review of another step. Finish that review first.")
+            elif status == "running":
+                if not att or att["status"] != "running":
+                    raise ValueError("While the workflow runs, only the step that's working now can be steered. "
+                                     "Wait for the run to finish (or stop it) to redo other steps.")
+                proc = self.proc_of.get(att["session"])
+                if not proc or proc.poll() is not None:
+                    raise ValueError("This step is just finishing. Steer it again once it's done.")
+                run.setdefault("_steer", {})[step_id] = message
+                att["steerPending"] = message
+        if status == "waiting":
+            return self.review(rid, "revise", message)
+        if status == "running":
+            compat.kill_tree(proc.pid)  # _run_step sees the steer and continues the conversation
+            self._changed(run)
+            return rid
+        if not att:
+            raise ValueError("This step hasn't run yet, so there's nothing to steer. Replay the run instead.")
+        return self.replay(rid, step_id, only, resume=(att["session"], message))
+
+    @staticmethod
+    def _steer_prompt(message, interrupted):
+        return (("The user interrupted you while you were working on this step" if interrupted else
+                 "The user looked at your result for this step") + " and is steering you:\n\n" + message +
+                "\n\nFollow this guidance. Everything you did earlier in this conversation, and the files you wrote, "
+                "are still there: continue from them rather than starting over. When you're done, give your final "
+                "result for this step.")
 
     def stop(self, rid):
         with self.lock:
             run = self.runs.get(rid)
             if not run or run["status"] not in ("running", "waiting"):
                 raise ValueError("That run isn't running.")
+            if run.get("external"):  # ask the terminal that runs it to stop, as if Ctrl+C was pressed there
+                compat.interrupt(run["pid"])
+                return
             run["stop"] = True
             procs = list(self.procs.get(rid, ()))
             wait = self.waits.get(rid)
@@ -866,6 +1046,8 @@ class Runner:
             final = "stopped"
         if final == "failed":
             run["stop"] = False
+        run.pop("_steer", None)
+        run.pop("_resume", None)
         run.update(status=final, ended=time.time(), current=None)
         self._changed(run)
 
@@ -933,7 +1115,14 @@ class Runner:
 
     def _run_step(self, wf, run, step, prev_out, prev_session, notes="", extra="", revision=0, loop=0, prev_label=""):
         reason, out, session = "", "", None
-        for attempt in range(1, step["retries"] + 2):
+        resume, steer, interrupted = None, "", False
+        with self.lock:  # "redo with my feedback" on a finished step: continue its conversation
+            pending = (run.get("_resume") or {}).pop(step["id"], None)
+        if pending and step.get("kind") != "bash":
+            resume, steer = pending
+        attempt = 0
+        while attempt < step["retries"] + 1:
+            attempt += 1
             if run["stop"]:
                 return False, out, session, "stopped"
             session = str(uuid.uuid4())
@@ -945,25 +1134,47 @@ class Runner:
                 if run["stop"]:
                     return False, out, session, "stopped"
                 continue
-            prompt = step["prompt"] + self._agent_instructions(wf, step)
-            if wf["passOutput"] and prev_out:
-                prompt += f"\n\n---\n{prev_label or 'Output from the previous workflow step:'}\n{prev_out}"
-            if notes:
-                prompt += f"\n\n---\nNotes from the user's review of the previous step (follow them):\n{notes}"
-            prompt += extra
-            if attempt > 1:
-                prompt += (f"\n\n---\nThis is retry {attempt - 1} of {step['retries']}. "
-                           f"The previous attempt failed: {reason}\nFix the problem and complete the task.")
+            if resume and providers.split(step["model"] or wf["model"])[0] not in ("claude", "ollama"):
+                extra_steer = "\n\n---\n" + self._steer_prompt(steer, interrupted)
+                resume = None  # this tool can't continue a conversation: start over, with the guidance added
+            else:
+                extra_steer = ""
+            if resume:
+                prompt = self._steer_prompt(steer, interrupted)
+            else:
+                prompt = step["prompt"] + self._agent_instructions(wf, step)
+                if wf["passOutput"] and prev_out:
+                    prompt += f"\n\n---\n{prev_label or 'Output from the previous workflow step:'}\n{prev_out}"
+                if notes:
+                    prompt += f"\n\n---\nNotes from the user's review of the previous step (follow them):\n{notes}"
+                prompt += extra
+                if attempt > 1:
+                    prompt += (f"\n\n---\nThis is retry {attempt - 1} of {step['retries']}. "
+                               f"The previous attempt failed: {reason}\nFix the problem and complete the task.")
+                prompt += extra_steer
             rec = {"step": step["id"], "name": step["name"], "attempt": attempt, "revision": revision, "session": session,
                    "replay": run.get("replay", 0), "loop": loop,
                    "input": prompt[-20000:], "inputModel": step["model"] or wf["model"] or "default",
                    "status": "running", "started": time.time(), "ended": None, "cost": 0.0, "error": "", "output": ""}
+            if resume or extra_steer:
+                rec.update(steer=steer, continues=resume)
             run["attempts"].append(rec)
             run["current"] = step["id"]
-            self._link(run, step, session, attempt, prev_session if not revision else None, revision, loop)
+            self._link(run, step, session, attempt, resume or (prev_session if not revision else None), revision, loop)
             self._changed(run)
 
-            ok, out, reason, cost = self._invoke(wf, run, step, prompt, session)
+            ok, out, reason, cost = self._invoke(wf, run, step, prompt, session, resume=resume)
+            with self.lock:
+                steered = (run.get("_steer") or {}).pop(step["id"], None)
+            if steered is not None and not run["stop"]:  # the user steered it mid-step: continue with their message
+                rec.update(status="steered", ended=time.time(), cost=cost, error="", output=out[-4000:])
+                rec.pop("steerPending", None)
+                run["cost"] += cost
+                self._changed(run)
+                resume, steer, interrupted = session, steered, True
+                attempt -= 1  # steering doesn't use up a retry
+                continue
+            resume, steer, interrupted = None, "", False
             if ok and step["check"] and not run["stop"]:
                 ok, reason = self._check(wf, step)
             rec.update(status="ok" if ok else ("stopped" if run["stop"] else "failed"), ended=time.time(),
@@ -1034,58 +1245,99 @@ class Runner:
                 pass
         return used
 
-    def _invoke(self, wf, run, step, prompt, session):
-        cmd = [compat.claude_cmd(), "-p", "--output-format", "json", "--session-id", session,
-               "-n", f"{wf['name']} · {step['name']}", "--permission-mode", wf["permissionMode"]]
-        model = step["model"] or wf["model"]
-        if model:
-            cmd += ["--model", model]
-        if wf["maxBudgetUsd"]:
-            cmd += ["--max-budget-usd", str(wf["maxBudgetUsd"])]
+    def _invoke(self, wf, run, step, prompt, session, resume=None):
+        # resume: continue that session's conversation (steering), saved under this new session id
+        provider, name = providers.split(step["model"] or wf["model"])
+        try:
+            providers.check_ready(provider, name)
+        except ValueError as exc:
+            return False, "", str(exc), 0.0
         agents = self._step_agents(wf, step)
-        if agents:
-            defs = {}
-            for a in agents:
-                d = {"description": a["description"], "prompt": a["prompt"]}
-                if a["tools"]:
-                    d["tools"] = a["tools"]
-                if a["model"]:
-                    d["model"] = a["model"]
-                defs[a["name"]] = d
-            cmd += ["--agents", json.dumps(defs)]
-            if len(agents) == 1:
-                cmd += ["--agent", agents[0]["name"]]  # the step runs as this subagent, so it is always used
-        allowed = list(wf["allowedTools"])
-        if agents and allowed and "Agent" not in allowed:
-            allowed.append("Agent")  # an allow-list would otherwise block delegating
-        if allowed:
-            cmd += ["--allowedTools", ",".join(allowed)]
-        if wf["disallowedTools"]:
-            cmd += ["--disallowedTools", ",".join(wf["disallowedTools"])]
+        env, last_file = None, None
+        if provider in ("claude", "ollama"):  # Claude Code (Ollama: pointed at the local model)
+            cmd = [compat.claude_cmd(), "-p", "--output-format", "json", "--session-id", session,
+                   *(["--resume", resume, "--fork-session"] if resume else []),
+                   "-n", f"{wf['name']} · {step['name']}", "--permission-mode", wf["permissionMode"]]
+            if name:
+                cmd += ["--model", name]
+            if provider == "ollama":
+                env = {**os.environ, **providers.command("ollama", name, claude_cmd="", permission_mode="", cwd="")[1]}
+            if wf["maxBudgetUsd"] and provider == "claude":
+                cmd += ["--max-budget-usd", str(wf["maxBudgetUsd"])]
+            if agents:
+                defs = {}
+                for a in agents:
+                    d = {"description": a["description"], "prompt": a["prompt"]}
+                    if a["tools"]:
+                        d["tools"] = a["tools"]
+                    if a["model"]:
+                        d["model"] = a["model"]
+                    defs[a["name"]] = d
+                cmd += ["--agents", json.dumps(defs)]
+                if len(agents) == 1:
+                    cmd += ["--agent", agents[0]["name"]]  # the step runs as this subagent, so it is always used
+            allowed = list(wf["allowedTools"])
+            if agents and allowed and "Agent" not in allowed:
+                allowed.append("Agent")  # an allow-list would otherwise block delegating
+            if allowed:
+                cmd += ["--allowedTools", ",".join(allowed)]
+            if wf["disallowedTools"]:
+                cmd += ["--disallowedTools", ",".join(wf["disallowedTools"])]
+        else:  # Gemini CLI / Codex CLI: no subagents, so the helpers' instructions go into the prompt
+            if agents:
+                prompt = self._roles_text(agents) + prompt
+            os.makedirs(RUN_DIR, exist_ok=True)
+            last_file = os.path.join(RUN_DIR, f"{session}.answer.txt")
+            cmd, extra = providers.command(provider, name, claude_cmd="", permission_mode=wf["permissionMode"],
+                                           cwd=wf["cwd"], last_message_file=last_file)
+            env = {**os.environ, **extra} if extra else None
+        tool = providers.INFO[provider]["cli"] if provider != "ollama" else "claude"
         try:
             proc = subprocess.Popen(cmd, cwd=wf["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, **compat.detached())
+                                    stderr=subprocess.PIPE, text=True, env=env, **compat.detached())
         except OSError as exc:
-            return False, "", f"couldn't start claude: {exc}", 0.0
+            return False, "", f"couldn't start {tool}: {exc}", 0.0
         with self.lock:
             self.procs.setdefault(run["id"], set()).add(proc)
+            self.proc_of[session] = proc
         stdout, stderr = proc.communicate(prompt)
         with self.lock:
             self.procs.get(run["id"], set()).discard(proc)
+            self.proc_of.pop(session, None)
+        if provider in ("gemini", "gpt"):
+            out = stdout.strip()
+            if last_file and os.path.exists(last_file):  # codex: just its final answer, not the whole transcript
+                with open(last_file, errors="replace") as f:
+                    out = f.read().strip() or out
+                os.remove(last_file)
+            if proc.returncode != 0:
+                tail = (stderr or stdout or "").strip()[-400:]
+                return False, out, f"{tool} exited with code {proc.returncode}: {tail}", 0.0
+            return True, out, "", 0.0  # these tools don't report a price
         try:
             res = json.loads(stdout.strip().splitlines()[-1])
         except (ValueError, IndexError):
             tail = (stderr or stdout or "").strip()[-400:]
             return False, "", f"claude exited with code {proc.returncode}: {tail}", 0.0
         out = str(res.get("result") or "")
-        cost = float(res.get("total_cost_usd") or 0)
+        cost = float(res.get("total_cost_usd") or 0) if provider == "claude" else 0.0  # local models are free
         if proc.returncode != 0 or res.get("is_error"):
             return False, out, f"{res.get('subtype') or 'error'}: {out[-400:]}", cost
-        if len(agents) > 1:  # several subagents: each one must have been used
+        if len(agents) > 1 and not resume:  # several subagents: each one must have been used (a steer may not need them again)
             missing = [a["name"] for a in agents if a["name"] not in self._agents_used(session)]
             if missing:
                 return False, out, f"didn't use the subagent{'s' if len(missing) > 1 else ''} {', '.join(missing)}", cost
         return True, out, "", cost
+
+    @staticmethod
+    def _roles_text(agents):
+        """Helpers, written out for tools without subagents (Gemini CLI, Codex CLI)."""
+        if len(agents) == 1:
+            a = agents[0]
+            return f"Work as this role for the whole task: {a['name']}: {a['description']}\n{a['prompt']}\n\n---\n"
+        roles = "\n\n".join(f"### {a['name']}: {a['description']}\n{a['prompt']}" for a in agents)
+        return ("Do this task by working through each of these roles in turn, giving each its part of the work, "
+                "then combine the results:\n\n" + roles + "\n\n---\n")
 
     def _run_bash(self, wf, run, step, prev_out, notes, attempt, revision, loop, session, prev_session, last_reason):
         """A shell step: runs the command with bash in the workflow folder. No Claude, so no cost.

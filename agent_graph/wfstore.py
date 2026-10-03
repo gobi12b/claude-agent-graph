@@ -458,7 +458,8 @@ def _plain(x):
 def load_defaults():
     """The agent library and step templates: app defaults, then your files on top."""
     files = [os.path.join(DEFAULTS_DIR, "agents.yaml"), os.path.join(DEFAULTS_DIR, "steps.yaml"), USER_AGENTS, USER_STEPS]
-    key = tuple((f, os.path.getmtime(f)) for f in files if os.path.exists(f))
+    samples_file = os.path.join(DEFAULTS_DIR, "samples.yaml")
+    key = tuple((f, os.path.getmtime(f)) for f in files + [samples_file] if os.path.exists(f))
     if _defaults_cache[0] == key:
         return _defaults_cache[1]
     errors, categories, steps = [], [], {}
@@ -495,7 +496,13 @@ def load_defaults():
             steps[k] = {**(v or {}), "source": "user" if mine else "builtin", "overrides": mine and k in builtin_steps}
             if not mine:
                 builtin_steps.add(k)
-    result = {"categories": [c for c in categories if c["agents"]], "steps": steps, "errors": errors,
+    samples = []  # ready-made workflows for "Start from a sample"
+    try:
+        for k, v in (_plain(_read_yaml(samples_file)).get("samples") or {}).items():
+            samples.append({"id": k, **(v or {})})
+    except MarkedYAMLError as exc:
+        errors.append({"name": _tilde(samples_file), "file": samples_file, "error": str(exc.problem)})
+    result = {"categories": [c for c in categories if c["agents"]], "steps": steps, "errors": errors, "samples": samples,
               "files": {"agents": files[0], "steps": files[1], "userAgents": USER_AGENTS, "userSteps": USER_STEPS}}
     _defaults_cache[0], _defaults_cache[1] = key, result
     return result
