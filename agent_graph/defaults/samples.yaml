@@ -29,6 +29,10 @@ samples:
         prompt: |
           Fix the problem using the plan from the previous step. Keep the change small and focused,
           and match the existing code style.
+        judge: |
+          - The change fixes the root cause described in the plan, not just the visible symptom
+          - The change is small and focused: no unrelated files or refactors
+          - No debugging leftovers (print statements, commented-out code, TODOs added)
       - name: Test & fix
         retries: 2
         agents: [qa-engineer]
@@ -67,6 +71,10 @@ samples:
         prompt: |
           Implement the feature described in docs/spec.md and docs/design.md. Keep changes focused,
           match the existing code style, and add tests for the new behaviour.
+        judge: |
+          - Every requirement in docs/spec.md is implemented (name any that are missing)
+          - The empty and error states from docs/design.md are handled
+          - Tests were added that exercise the new behaviour
       - name: Test & fix
         retries: 2
         prompt: |

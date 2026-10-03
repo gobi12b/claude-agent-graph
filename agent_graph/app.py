@@ -22,6 +22,8 @@ from . import providers, workflows
 from .watcher import Graph
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ICON_PNG = os.path.join(HERE, "assets", "icon.png")
+ASSETS = {"/icon.svg": ("icon.svg", "image/svg+xml"), "/icon.png": ("icon.png", "image/png")}
 POLL_SECONDS = 0.5
 HEARTBEAT_SECONDS = 3
 
@@ -154,6 +156,9 @@ API_POST = {
     "/api/runs/save": lambda b: ok(runner.write_artefact(b["id"], b["path"], str(b["text"]))),
     "/api/rewrite": lambda b: ok(workflows.rewrite_text(b.get("text"), b.get("kind", "step"), b.get("context", ""))),
     "/api/runs/file": lambda b: ok(runner.read_artefact(b["id"], b["path"])),
+    "/api/runs/changes": lambda b: ok(runner.changes(b["id"], str(b["session"]))),
+    "/api/runs/rewind": lambda b: ok(runner.rewind(b["id"], str(b["session"]))),
+    "/api/runs/unrewind": lambda b: ok(runner.undo_rewind(b["id"])),
     "/api/runs/open": lambda b: ok(runner.open_artefact(b["id"], b["path"], bool(b.get("folder")))),
 }
 
@@ -192,6 +197,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path in ASSETS:
+            name, ctype = ASSETS[self.path]
+            with open(os.path.join(HERE, "assets", name), "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "max-age=86400")
             self.end_headers()
             self.wfile.write(body)
         elif self.path == "/events":
@@ -247,7 +262,10 @@ def open_window(url):
         import webview  # pywebview: native window on macOS, Windows and Linux
 
         webview.create_window("Claude Agent Graph", url, width=1400, height=900)
-        webview.start()
+        try:
+            webview.start(icon=ICON_PNG)  # used where the platform allows (GTK / Qt)
+        except TypeError:  # older pywebview without the icon option
+            webview.start()
 
 
 def open_gtk_window(url):
@@ -255,11 +273,15 @@ def open_gtk_window(url):
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("WebKit2", "4.1")
-    from gi.repository import Gtk, WebKit2
+    from gi.repository import GLib, Gtk, WebKit2
 
+    GLib.set_prgname("claude-agent-graph")  # matches StartupWMClass in the app-menu entry, so docks show our icon
     win = Gtk.Window(title="Claude Agent Graph")
     win.set_default_size(1400, 900)
-    win.set_icon_name("network-workgroup")
+    try:
+        win.set_icon_from_file(ICON_PNG)
+    except GLib.Error:
+        win.set_icon_name("network-workgroup")
     view = WebKit2.WebView()
     view.load_uri(url)
     win.add(view)

@@ -35,4 +35,4 @@ packages = ["agent_graph"]
 version = { attr = "agent_graph.__version__" }
 
 [tool.setuptools.package-data]
-agent_graph = ["index.html", "defaults/*.yaml"]
+agent_graph = ["index.html", "defaults/*.yaml", "assets/*"]

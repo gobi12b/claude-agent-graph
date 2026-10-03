@@ -157,7 +157,9 @@ def cmd_run(args):
                     print(f"  {_c('33', '●')} {label}…")
                 elif st == "ok":
                     took = _dur(att["ended"] - att["started"]) + " · $%.2f" % att["cost"]
-                    print(f"  {_c('32', '✓')} {label}  {_c('2', took)}")
+                    j = att.get("judge") or {}
+                    verdict = f"  {_c('36', '⚖ judge %d/100' % j['score'])}" if j.get("status") == "pass" else ""
+                    print(f"  {_c('32', '✓')} {label}  {_c('2', took)}{verdict}")
                 elif st == "failed":
                     print(f"  {_c('31', '✗')} {label}: {att.get('error', '')[:300]}")
                 elif st == "stopped":
@@ -187,7 +189,7 @@ def cmd_run(args):
     status = run["status"]
     if args.json:
         print(json.dumps({k: run.get(k) for k in ("id", "name", "status", "started", "ended", "cost", "error")} |
-                         {"steps": [{k: a.get(k) for k in ("name", "status", "attempt", "cost", "error", "output")} for a in run["attempts"]]},
+                         {"steps": [{k: a.get(k) for k in ("name", "status", "attempt", "cost", "error", "output", "judge", "usage")} for a in run["attempts"]]},
                          indent=2))
     else:
         mark = {"succeeded": _c("32;1", "✓ Finished"), "failed": _c("31;1", "✗ Failed"), "stopped": _c("2;1", "■ Stopped")}.get(status, status)

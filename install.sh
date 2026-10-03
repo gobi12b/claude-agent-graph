@@ -45,16 +45,22 @@ else
     ln -sf "$VENV/bin/agent-graph" "$BIN/agent-graph"
 fi
 
-# Linux: add an app-menu entry.
+# Linux: add an app-menu entry, with the app's icon.
 if [ "$(uname -s)" = "Linux" ] && [ -d "$HOME/.local/share" ]; then
-    mkdir -p "$HOME/.local/share/applications"
+    mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/claude-agent-graph"
+    ICON="$HOME/.local/share/claude-agent-graph/icon.png"
+    ICON_URL="${AGENT_GRAPH_ICON_URL:-https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/agent_graph/assets/icon.png}"
+    if ! { curl -fsSL "$ICON_URL" -o "$ICON" 2>/dev/null || wget -qO "$ICON" "$ICON_URL" 2>/dev/null; }; then
+        rm -f "$ICON"; ICON="network-workgroup"  # offline: a stock icon
+    fi
     cat > "$HOME/.local/share/applications/claude-agent-graph.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Claude Agent Graph
 Comment=Live view of your Claude Code sessions and workflows
 Exec=$BIN/agent-graph
-Icon=network-workgroup
+Icon=$ICON
+StartupWMClass=claude-agent-graph
 Terminal=false
 Categories=Development;
 EOF

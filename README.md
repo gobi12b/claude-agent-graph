@@ -11,6 +11,9 @@ Runs on **macOS, Linux and Windows**.
 - **Stop a running session** from the graph
 - **Workflow builder**: steps run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible
 - **Review checkpoints**: a step can pause for your approval or feedback before the workflow goes on
+- **AI judge**: write a step's acceptance criteria in plain words; an independent AI grades the step's real file changes against them, and its feedback drives the retry
+- **Step diffs and rewind**: every step is checkpointed, so you see exactly what it changed and can put the project back to before it (and undo that)
+- **Token insight**: each step's input/output tokens, prompt-cache hit rate and turns
 - **Steering**: send Claude guidance while a step runs (it continues the same conversation with your message), or redo a finished step with your feedback
 - **Sample workflows**: ready-made workflows (fix a bug, build a feature, explain a project, security check, …) to start from
 - **Command line**: list, run and validate workflows from the terminal, by name or straight from a workflow YAML file (`agent-graph run flow.yaml`, `agent-graph validate flows/*.yaml`), handy for scripts and CI
@@ -286,6 +289,44 @@ How each one works in a workflow:
 
 In workflow YAML, `model:` (for the workflow or one step) is `haiku`, `sonnet`, `opus` or `fable` for Claude; `gemini` or `gemini:<model>`; `gpt` or `gpt:<model>`; or `ollama:<model>`, for example `ollama:qwen3-coder`. A plain `gemini` or `gpt` means that tool's default model. Don't write `gemini:` with nothing after the colon by hand: that isn't valid YAML unless it's quoted. Model names you add on the AI models page are offered in the menus.
 
+## AI judge, step diffs and rewind
+
+### AI judge
+
+A shell `check:` can only test what a command can test. For everything else (“did it fix the root cause?”, “is every requirement in the spec covered?”), give the step acceptance criteria:
+
+```yaml
+- id: fix
+  name: Fix it
+  retries: 2
+  prompt: Fix the bug using the plan from the previous step.
+  judge: |
+    - The root cause is fixed, not just the symptom
+    - A test reproduces the bug and now passes
+    - No unrelated files changed
+```
+
+After the step (and its `check:`, if any) succeeds, a separate model with a fresh context and no tools grades it:
+
+- It judges each criterion on **evidence**: the git diff of everything the step changed (or, outside git, the files it wrote). The step's own summary is treated as a claim, not proof.
+- The verdict is structured (pass, a 0–100 score, and met / not met with evidence for each criterion), so it can't be vague.
+- If it fails, the step fails, and the judge's feedback becomes the reason given to the retry or loop-back. That makes retries an evaluate → fix loop instead of trying the same thing again.
+
+The judge uses Haiku by default (usually a cent or two per verdict). Choose Sonnet or Opus in the workflow's **Advanced options** (`judgeModel:` in YAML). A judge that isn't the model that did the work tends to be stricter. Verdicts show on the step's **Result** tab and in the terminal (`⚖ judge 92/100`).
+
+### Step diffs and rewind
+
+When the workflow folder is a git repository, the project is snapshotted before and after every step. Snapshots use a private index, so your branch, staged changes, HEAD and stash are never touched; uncommitted and untracked files are included and `.gitignore` is respected.
+
+- The step's **Changes** tab shows the files it added, edited or deleted and the full diff.
+- **⏪ Rewind to before this step** puts the folder back exactly as it was when that step started (undoing it and every later change). The current state is snapshotted first, so **↶ Undo rewind** brings it all back. Rewinding is only possible while the run isn't running.
+- Steps that run in parallel share the folder, so one's diff can include the other's changes.
+- Snapshots are ordinary git objects that nothing references, so `git gc` removes them after a couple of weeks; old runs then show no diff.
+
+### Token insight
+
+Each Claude step's **Result** tab shows the tokens it read and wrote, its number of turns, and its **prompt-cache hit rate**. A low cache rate on a long step usually means the context kept changing, which costs more and runs slower.
+
 ## Platform notes
 
 - **Shell steps** (`run:`) and **checks** (`check:`) run with `bash -lc` in the workflow folder: bash on macOS/Linux, Git Bash on Windows (found via `CLAUDE_CODE_GIT_BASH_PATH`, `git`, or the default install paths). If there's no bash on Windows, they fall back to `cmd.exe`.
@@ -336,6 +377,7 @@ agent_graph/
   watcher.py    tails ~/.claude transcripts and builds the graph
   workflows.py  workflow runner, IDE integration, permissions editor
   wfstore.py    YAML storage that keeps your comments on save
+  quality.py    step checkpoints (diff, rewind) and the AI judge
   compat.py     the Linux / macOS / Windows differences
   index.html    the whole UI (single file, no build step)
   defaults/     built-in agent library and step templates

@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude Agent Graph</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.png">
 <style>
   :root {
     --bg: #0c0e13; --panel: #14171f; --raise: #1a1e28; --line: #252a36; --text: #e8eaf0; --muted: #8f96a8;
@@ -32,9 +34,7 @@
   #rail { width: 212px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column;
     padding: 14px 10px; gap: 2px; overflow-y: auto; }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; padding: 4px 8px 16px; letter-spacing: -.01em; }
-  .brand .logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #fff;
-    background: linear-gradient(135deg, var(--prompt), var(--e-helpers)); }
-  .brand .logo svg { width: 18px; height: 18px; }
+  .brand .logo { width: 30px; height: 30px; flex-shrink: 0; }
   .ritem { display: flex; align-items: center; gap: 11px; width: 100%; padding: 8px 10px; border: 0; border-radius: 9px; background: none;
     color: var(--muted); font: inherit; font-weight: 550; cursor: pointer; text-align: left; position: relative; }
   .ritem svg { width: 19px; height: 19px; flex-shrink: 0; }
@@ -396,6 +396,27 @@
   pre.out { margin: 0; padding: 10px; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 ui-monospace, monospace;
     max-height: 60vh; overflow: auto; background: var(--bg); border-radius: 8px; }
   .preview pre.out { border-radius: 0; } pre.out.err { color: var(--failed); }
+  .judge { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--raise); font-size: 13px; }
+  .judge.pass { border-color: color-mix(in srgb, var(--done) 50%, var(--line)); }
+  .judge.fail, .judge.error { border-color: color-mix(in srgb, var(--failed) 50%, var(--line)); }
+  .judge .jh { display: flex; gap: 8px; align-items: baseline; font-weight: 650; }
+  .judge .score { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
+  .judge ul { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+  .judge li { display: grid; grid-template-columns: 16px 1fr; gap: 6px; font-size: 12.5px; }
+  .judge li small { grid-column: 2; color: var(--muted); }
+  .judge .ok { color: var(--done); } .judge .no { color: var(--failed); }
+  .judge p { margin: 8px 0 0; color: var(--muted); }
+  .usage { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .usage span { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+  .chead { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
+  .chead .btn { margin-left: auto; }
+  .cfile { display: flex; gap: 8px; font: 12px ui-monospace, monospace; padding: 3px 4px; }
+  .cfile .cp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .da { color: var(--done); } .dr { color: var(--failed); } .dh { color: var(--muted); } .dk { color: var(--prompt); }
+  pre.out.diff { white-space: pre; overflow-x: auto; margin-top: 8px; }
+  .rewound { border: 1px solid color-mix(in srgb, var(--retry) 50%, var(--line)); background: color-mix(in srgb, var(--retry) 8%, var(--panel));
+    border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+  .rewound .btn { margin-left: auto; }
   .runlink { cursor: pointer; } .runlink:hover .nm { color: var(--prompt); }
   .log { font-size: 12px; max-height: calc(100vh - 210px); overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
   .le { border-bottom: 1px solid var(--line); } .le summary { display: flex; gap: 8px; padding: 6px 10px; cursor: pointer; list-style: none; align-items: baseline; }
@@ -443,7 +464,7 @@
 <body>
 <div id="shell">
   <nav id="rail" aria-label="Main">
-    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.2 8.3l2.6 7.4M15.9 7.6l-2.7 8.1M8.5 6.8l7-.6"/></svg></span><span>Agent Graph</span></div>
+    <div class="brand"><img class="logo" src="/icon.svg" alt=""><span>Agent Graph</span></div>
     <button class="ritem" data-go="home" style="--ec:var(--e-home)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg><span>Home</span><b class="rbadge" id="rb-home" hidden></b></button>
     <button class="ritem" data-go="live" style="--ec:var(--e-live)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.2 8.3l2.6 7.4M15.9 7.6l-2.7 8.1M8.5 6.8l7-.6"/></svg><span>Live map</span><b class="rbadge" id="rb-live" hidden></b></button>
     <button class="ritem" data-go="sessions" style="--ec:var(--e-sessions)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 9l3 2.5L7 14M12 14h5"/></svg><span>Sessions</span><b class="rbadge" id="rb-sessions" hidden></b></button>
@@ -1412,7 +1433,7 @@ let draft = null, sel = null;  // sel: {type:"step", i} | {type:"agent", i} | nu
 const uid = () => "new-" + Math.random().toString(36).slice(2, 7);  // the server gives it a readable id on save
 const newStep = (key = "blank") => {
   const b = STEP_BLOCKS[key] || STEP_BLOCKS.blank || { name: "New step", prompt: "" };
-  return { id: uid(), name: b.name, prompt: b.prompt || "", retries: b.retries || 0, check: b.check || "", model: b.model || "",
+  return { id: uid(), name: b.name, prompt: b.prompt || "", retries: b.retries || 0, check: b.check || "", judge: b.judge || "", model: b.model || "",
            ...(b.run !== undefined || b.kind === "bash" ? { kind: "bash", run: b.run || "" } : {}),
            onSuccess: "next", onFailure: "stop", agents: [...(b.agents || [])], review: !!b.review,
            ...(b.loopBack ? { loopBack: { ...b.loopBack } } : {}) };
@@ -1495,7 +1516,7 @@ function openEditor(wf, preset) {
     if (preset.sample) {  // a sample: its steps, helpers and review points, with the user's task filled in
       const fill = t => String(t || "").replace(/\{task\}/g, preset.task || "<describe the task>").trim();
       draft.steps = preset.sample.steps.map(st => ({ id: uid(), name: st.name, prompt: fill(st.prompt), retries: +st.retries || 0,
-        check: st.check || "", model: st.model || "", onSuccess: "next", onFailure: "stop", review: !!st.review,
+        check: st.check || "", judge: st.judge || "", model: st.model || "", onSuccess: "next", onFailure: "stop", review: !!st.review,
         agents: (st.agents || []).filter(ensureAgent), ...(st.run !== undefined ? { kind: "bash", run: fill(st.run) } : {}) }));
       if (preset.sample.model) { draft.model = preset.sample.model; document.getElementById("bmodel").value = draft.model; }
     }
@@ -1605,7 +1626,7 @@ function renderLane() {
     const filled = s.kind === "bash" ? (s.run || "").trim() : s.prompt.trim();
     return `<div class="card ${sel?.type === "step" && sel.i === i ? "on" : ""} ${filled ? "" : "empty"} ${s.kind === "bash" ? "bash" : ""}" data-i="${i}" data-drag="card">
       <div class="ctop"><span class="num">${i + 1}</span><b class="cname">${esc(s.name)}</b>
-        <span class="badges">${s.kind === "bash" ? `<span class="free" title="Runs the command with bash: no Claude, no cost">⌨ shell · free</span>` : ""}${s.retries ? `<span class="r" title="Retries">↻${s.retries}</span>` : ""}${s.check ? `<span title="Success check: ${esc(s.check)}">✔ check</span>` : ""}${s.model ? `<span>${esc(modelLabel(s.model))}</span>` : ""}</span>
+        <span class="badges">${s.kind === "bash" ? `<span class="free" title="Runs the command with bash: no Claude, no cost">⌨ shell · free</span>` : ""}${s.retries ? `<span class="r" title="Retries">↻${s.retries}</span>` : ""}${s.check ? `<span title="Success check: ${esc(s.check)}">✔ check</span>` : ""}${s.judge ? `<span title="AI judge: ${esc(s.judge)}">⚖ judge</span>` : ""}${s.model ? `<span>${esc(modelLabel(s.model))}</span>` : ""}</span>
         <button class="x" data-del="${i}" title="Remove step" aria-label="Remove step">✕</button></div>
       ${s.kind === "bash" ? `<div class="cprompt cmd">${(s.run || "").trim() ? "$ " + esc(s.run) : "Click to write the shell command…"}</div>`
         : `<div class="cprompt">${s.prompt.trim() ? esc(s.prompt) : "Click here to say what Claude should do…"}</div>`}
@@ -1650,6 +1671,8 @@ function renderInspector() {
       </div>`}
       <label class="f">Success check <span class="hint">optional. A terminal command that must pass, such as your tests. If it fails, the step is retried.</span>
         <input data-s="check" value="${esc(s.check)}" placeholder="e.g. ./gradlew test"></label>
+      <label class="f">AI judge: acceptance criteria <span class="hint">optional. A separate AI checks the step's actual file changes against these, one by one. If any isn't met, the step fails and its retry or loop-back gets the judge's feedback.</span>
+        <textarea data-s="judge" rows="4" placeholder="e.g.&#10;- The root cause is fixed, not just the symptom&#10;- A test reproduces the bug and now passes&#10;- No unrelated files changed">${esc(s.judge || "")}</textarea></label>
       <div class="sub">Runs after</div>
       <div class="deplist">${i === 0 && s.dependsOn === undefined ? `<span class="hint">First step: starts right away.</span>` : ""}
         ${draft.steps.slice(0, i).map(x => `<label class="chk"><input type="checkbox" data-dep="${esc(x.id)}" ${depsOf(s, i).includes(x.id) ? "checked" : ""}>${esc(x.name)}</label>`).join("")}
@@ -1693,13 +1716,15 @@ function renderInspector() {
       <details class="adv" ${advOpen ? "open" : ""}><summary>Advanced options</summary>
       <label class="f">Always allow <span class="hint">one rule per line</span><textarea data-k="allowedTools" rows="3" placeholder="Bash(./gradlew:*)">${esc(draft.allowedTools.join("\n"))}</textarea></label>
       <label class="f">Never allow <span class="hint">one rule per line</span><textarea data-k="disallowedTools" rows="3" placeholder="Bash(git push:*)">${esc(draft.disallowedTools.join("\n"))}</textarea></label>
+      <label class="f">AI judge model <span class="hint">grades steps that have acceptance criteria</span><select data-k="judgeModel">${opts([["", "Haiku · cheapest (default)"], ["sonnet", "Sonnet · more thorough"], ["opus", "Opus · strictest"]], draft.judgeModel || "")}</select>
+        <span class="hint">A judge that's a different model from the one doing the work is less likely to go easy on it.</span></label>
       </details>`;
   }
 }
 
 // "Advanced options" stays open/closed across re-renders; the summary counts non-default settings
 let advOpen = false;
-const advCount = (s, i) => [s.retries > 0, !!s.model, !!s.check, s.dependsOn !== undefined, !!s.loopBack,
+const advCount = (s, i) => [s.retries > 0, !!s.model, !!s.check, !!s.judge, s.dependsOn !== undefined, !!s.loopBack,
   s.onSuccess === "end", s.onFailure === "continue"].filter(Boolean).length;
 function select2(s) { sel = s; improve.undo = null; improve.msg = ""; renderBuilder(); }
 
@@ -2125,8 +2150,10 @@ function renderRunSide() {
     body = files.size ? `<div class="files">${[...files.values()].map(f => fileRow(f, f.first === "write" ? "＋" : "✎",
         `${f.first === "write" ? "written" : "edited"}${f.changes > 1 ? " ×" + f.changes : ""}${f.by.some(b => b !== "step") ? " · by " + esc(f.by.filter(b => b !== "step").join(", ")) : ""}`)).join("")}</div>` + previewHtml()
       : `<div class="empty" style="padding:10px 0">This step didn't create or change any files${att.status === "running" ? " yet" : ""}.</div>`;
+  } else if (rv.tab === "changes") {
+    body = `${atts.length > 1 ? attemptChips(atts, att) : ""}${changesHtml(att, r)}`;
   } else if (rv.tab === "output") {
-    body = `${atts.length > 1 ? attemptChips(atts, att) : ""}
+    body = `${atts.length > 1 ? attemptChips(atts, att) : ""}${judgeHtml(att)}${usageHtml(att)}
       <pre class="out">${att.output ? esc(att.output) : att.status === "running" ? "Still working…" : "(no output)"}</pre>`;
   } else {
     body = errs.length ? errs.map(a => `<div class="sub">${esc(attLabel(a, true))}</div><pre class="out err">${esc(a.error)}</pre>`).join("")
@@ -2137,8 +2164,8 @@ function renderRunSide() {
   const keep = logEl ? logEl.scrollTop : 0, open = logEl ? [...logEl.querySelectorAll("details[open]")].map(x => x.dataset.k) : [];
   const fb = document.getElementById("rvfeedback");
   if (fb) rv.draftFeedback = fb.value;
-  el.innerHTML = `${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}${steerBox(p, atts, r)}
-    <nav class="tabs rvtabs">${tab("input", "Instructions", (att.reads || []).length)}${tab("log", att.status === "running" ? "● Live activity" : "Activity")}${tab("files", "Files", files.size)}${tab("output", "Result")}${tab("errors", "Problems", errs.length)}</nav>
+  el.innerHTML = `${rewoundHtml(r)}${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}${steerBox(p, atts, r)}
+    <nav class="tabs rvtabs">${tab("input", "Instructions", (att.reads || []).length)}${tab("log", att.status === "running" ? "● Live activity" : "Activity")}${tab("files", "Files", files.size)}${tab("changes", "Changes")}${tab("output", att.judge?.status === "fail" ? "Result ⚖✗" : att.judge?.status === "pass" ? "Result ⚖✓" : "Result")}${tab("errors", "Problems", errs.length)}</nav>
     <div class="rvtab">${body}</div>`;
   const nl = document.getElementById("rvlog");
   if (nl) {  // follow new lines unless the user scrolled up to read
@@ -2146,6 +2173,68 @@ function renderRunSide() {
     nl.scrollTop = stick ? nl.scrollHeight : keep;
   }
   if (rv.tab === "log") ensureLog(att);
+}
+
+// ⚖ the AI judge's verdict, and the step's token use
+function judgeHtml(att) {
+  const j = att.judge;
+  if (!j) return "";
+  if (j.status === "running") return `<div class="judge"><div class="jh">⚖ The AI judge is checking this step's changes…</div></div>`;
+  if (j.status === "error") return `<div class="judge error"><div class="jh">⚖ The judge couldn't run</div><p>${esc(j.error)}</p></div>`;
+  return `<div class="judge ${j.status}"><div class="jh">${j.status === "pass" ? "⚖ Meets the acceptance criteria" : "⚖ Doesn't meet the acceptance criteria"}
+      <span class="score">${j.score}/100 · ${esc(j.model)} · $${(+j.cost || 0).toFixed(3)}</span></div>
+    ${j.criteria?.length ? `<ul>${j.criteria.map(c => `<li><span class="${c.met ? "ok" : "no"}">${c.met ? "✓" : "✗"}</span><span>${esc(c.criterion)}</span><small>${esc(c.evidence)}</small></li>`).join("")}</ul>` : ""}
+    ${j.feedback ? `<p>${esc(j.feedback)}</p>` : ""}</div>`;
+}
+const kTok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+function usageHtml(att) {
+  const u = att.usage;
+  if (!u) return "";
+  return `<div class="usage"><span title="Tokens the model read, including cached ones">${kTok(u.input)} in</span><span>${kTok(u.output)} out</span>
+    ${u.cacheHit != null ? `<span title="Share of input read from the prompt cache (cheaper and faster). Low on a long step can mean the context kept changing.">cache ${Math.round(u.cacheHit * 100)}%</span>` : ""}
+    ${u.turns ? `<span>${u.turns} turns</span>` : ""}</div>`;
+}
+
+// ⏪ what a step changed (from its before/after checkpoints), and rewinding the folder to before it
+const changesCache = new Map();
+async function loadChanges(att) {
+  const key = att.session + "|" + (att.after || "");
+  if (changesCache.has(key)) return;
+  changesCache.set(key, null);
+  try { changesCache.set(key, await api("/api/runs/changes", { id: rv.id, session: att.session })); }
+  catch (e) { changesCache.set(key, { available: false, reason: e.message }); }
+  if (rv?.tab === "changes") renderRunSide();
+}
+function diffHtml(patch) {
+  return patch.split("\n").map(l => {
+    const e = esc(l);
+    if (/^(diff |index |--- |\+\+\+ |new file|deleted file)/.test(l)) return `<span class="dh">${e}</span>`;
+    if (l.startsWith("@@")) return `<span class="dk">${e}</span>`;
+    if (l[0] === "+") return `<span class="da">${e}</span>`;
+    if (l[0] === "-") return `<span class="dr">${e}</span>`;
+    return e;
+  }).join("\n");
+}
+function changesHtml(att, r) {
+  const c = changesCache.get(att.session + "|" + (att.after || ""));
+  if (c === undefined) { loadChanges(att); return `<div class="empty">Loading…</div>`; }
+  if (c === null) return `<div class="empty">Loading…</div>`;
+  if (!c.available) return `<div class="empty" style="padding:10px 0">${esc(c.reason)}</div>`;
+  const busy = r.status === "running" || r.status === "waiting";
+  const rewind = att.before ? `<button class="btn sm" data-rewind="${esc(att.session)}" ${busy ? "disabled" : ""}
+      title="${busy ? "Stop the run (or let it finish) first" : "Put the project folder back exactly as it was before this step started. You can undo it."}">⏪ Rewind to before this step</button>` : "";
+  if (!c.files.length) return `<div class="chead"><span class="hint">This step didn't change any files.</span>${rewind}</div>`;
+  const icon = { added: "＋", deleted: "−", modified: "✎" };
+  return `<div class="chead"><b>${c.files.length} file${c.files.length > 1 ? "s" : ""}</b><span class="da">+${c.added}</span><span class="dr">−${c.removed}</span>${rewind}</div>
+    <div class="hint" style="margin-bottom:6px">Exactly what changed in the project folder while this step ran.${r.plan.length > 1 ? " Steps that ran at the same time share the folder, so their changes can show up here too." : ""}</div>
+    ${c.files.map(f => `<div class="cfile"><span>${icon[f.status]}</span><span class="cp" title="${esc(f.path)}">${esc(f.path)}</span>
+      ${f.added == null ? `<span class="dh">binary</span>` : `<span class="da">+${f.added}</span><span class="dr">−${f.removed}</span>`}</div>`).join("")}
+    <pre class="out diff">${diffHtml(c.patch)}${c.truncated ? `\n<span class="dh">… (diff shortened)</span>` : ""}</pre>`;
+}
+function rewoundHtml(r) {
+  if (!r.rewound) return "";
+  return `<div class="rewound">⏪ The folder was rewound to before “${esc(r.rewound.name)}”.
+    <button class="btn sm" data-unrewind title="Put back the files exactly as they were before the rewind">↶ Undo rewind</button></div>`;
 }
 
 function fileRow(f, icon, info) {
@@ -2723,6 +2812,14 @@ document.getElementById("rvside").addEventListener("click", async e => {
       return renderRunSide();
     }
     if (d.att) { rv.attempt = d.att; return renderRunSide(); }
+    if (d.rewind) {
+      if (!b.classList.contains("confirm")) { b.classList.add("confirm", "danger"); b.textContent = "⏪ Confirm: undo this step's changes and everything after"; return; }
+      b.disabled = true;
+      await api("/api/runs/rewind", { id: rv.id, session: d.rewind });
+      changesCache.clear(); document.getElementById("rvmsg").textContent = "⏪ Rewound. Undo it from the banner above if you change your mind.";
+      return refreshRun(true);
+    }
+    if ("unrewind" in d) { b.disabled = true; await api("/api/runs/unrewind", { id: rv.id }); changesCache.clear(); return refreshRun(true); }
     if (d.steer) return sendSteer(d.steer, b);
     if (d.replay) return showPop(d.replay);
     if (d.open) return await api("/api/runs/open", { id: rv.id, path: d.open });
@@ -3128,6 +3225,7 @@ function openTemplateEditor(key, t, mode) {
       <div class="row2"><label class="f">Retries <span class="hint">tries again if it fails</span><input id="te-retries" type="number" min="0" max="10" value="${+t.retries || 0}"></label>
         <label class="f">AI model<select id="te-model">${modelOpts(t.model || "", "Same as the workflow")}</select></label></div>
       <label class="f">Success check <span class="hint">optional terminal command that must pass, such as your tests</span><input id="te-check" value="${esc(t.check || "")}" placeholder="e.g. npm test"></label>
+      <label class="f">AI judge: acceptance criteria <span class="hint">optional. An AI checks the step's changes against these</span><textarea id="te-judge" rows="3">${esc(t.judge || "")}</textarea></label>
       <label class="f">Helpers <span class="hint">comma separated; this step hands its work to them</span><input id="te-agents" list="te-helpers" value="${esc((t.agents || []).join(", "))}" placeholder="e.g. qa-engineer">
         <datalist id="te-helpers">${libAgents().map(a => `<option value="${esc(a.name)}">`).join("")}</datalist></label></div></details>
   </div>`, `<span class="msg"></span><button class="btn" id="wfcancel">Cancel</button><button class="btn pri" id="tesave">${mode === "customize" ? "Save my version" : "Save template"}</button>`);
@@ -3136,7 +3234,7 @@ async function saveTemplate() {
   const v = id => document.getElementById(id).value.trim();
   const bash = document.querySelector('input[name="te-kind"]:checked').value === "bash";
   const step = { icon: v("te-icon"), name: v("te-name"), review: document.getElementById("te-review").checked, retries: +v("te-retries") || 0,
-                 model: v("te-model"), check: v("te-check"), agents: toolList(v("te-agents")) };
+                 model: v("te-model"), check: v("te-check"), judge: v("te-judge"), agents: toolList(v("te-agents")) };
   if (bash) step.run = v("te-run"); else step.prompt = document.getElementById("te-prompt").value.trim();
   let key = ted.key;
   if (!key) {  // new: a key from the name that doesn't replace an existing template by accident

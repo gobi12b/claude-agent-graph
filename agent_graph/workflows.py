@@ -16,8 +16,8 @@ import threading
 import time
 import uuid
 
-from . import compat, providers, wfstore
-from .watcher import parse_ts
+from . import compat, providers, quality, wfstore
+from .watcher import FILE_TOOLS, parse_ts
 
 CONFIG_DIR = os.path.expanduser("~/.config/claude-agent-graph")
 RUN_DIR = os.path.join(CONFIG_DIR, "runs")
@@ -105,9 +105,9 @@ def list_workflows(errors=None):
 
 # ---- workflow files given on the command line ------------------------------------------------------------
 WF_KEYS = {"id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
-           "maxBudgetUsd", "agents", "steps", "updated", "file"}
+           "maxBudgetUsd", "judgeModel", "agents", "steps", "updated", "file"}
 STEP_KEYS = {"id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
-             "onSuccess", "onFailure", "loopBack", "agents", "review"}
+             "onSuccess", "onFailure", "loopBack", "agents", "review", "judge"}
 AGENT_KEYS = {"name", "description", "prompt", "tools", "model"}
 
 
@@ -351,6 +351,7 @@ def validate(wf):
             "prompt": str(s.get("prompt") or "") if kind == "claude" else "",
             "retries": max(0, min(10, int(s.get("retries") or 0))),
             "check": str(s.get("check") or "").strip(),
+            "judge": str(s.get("judge") or "").strip(),
             "model": str(s.get("model") or "").strip(),
             "dependsOn": ([renames.get(str(d), str(d)) for d in s["dependsOn"]] if isinstance(s.get("dependsOn"), list)
                           else [renames.get(str(s["dependsOn"]), str(s["dependsOn"]))] if s.get("dependsOn")
@@ -402,6 +403,7 @@ def validate(wf):
         "disallowedTools": [t.strip() for t in wf.get("disallowedTools", []) if t.strip()],
         "passOutput": bool(wf.get("passOutput", True)),
         "maxBudgetUsd": float(budget) if budget not in (None, "") else None,
+        "judgeModel": str(wf.get("judgeModel") or "").strip(),
         "agents": agents,
         "steps": clean,
         "updated": wf.get("updated") or time.time(),
@@ -574,6 +576,37 @@ def _log_lines(d):
     return out
 
 
+def _usage(res):
+    """Token use of one claude -p call, and how much of its input came from the prompt cache."""
+    u = res.get("usage") or {}
+    fresh, read, write = (int(u.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+    total = fresh + read + write
+    return {"input": total, "output": int(u.get("output_tokens") or 0), "cacheRead": read, "cacheWrite": write,
+            "cacheHit": round(read / total, 3) if total else None, "turns": res.get("num_turns"),
+            "apiMs": res.get("duration_api_ms")}
+
+
+def _written_files(session):
+    """Files a step session (and its subagents) wrote or edited, read straight from its transcripts."""
+    root = os.path.join(os.path.expanduser("~/.claude/projects"), "*")
+    paths = glob.glob(os.path.join(root, session + ".jsonl")) + glob.glob(os.path.join(root, session, "subagents", "*.jsonl"))
+    out = []
+    for path in paths:
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    if '"tool_use"' not in line:
+                        continue
+                    for b in (json.loads(line).get("message") or {}).get("content") or []:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in FILE_TOOLS:
+                            p = (b.get("input") or {}).get("file_path") or (b.get("input") or {}).get("notebook_path")
+                            if p and p not in out:
+                                out.append(p)
+        except (OSError, ValueError):
+            continue
+    return out
+
+
 class Runner:
     def __init__(self, graph, notify):
         self.graph = graph
@@ -587,6 +620,7 @@ class Runner:
         self.lock = threading.Lock()
         self.own = set()  # runs this process is running (the others are history, or live in another process)
         self._disk = {}   # run id -> file time last read
+        self.usage = {}   # session -> token usage reported by claude -p
         self.sync_disk()
 
     def sync_disk(self):
@@ -658,7 +692,8 @@ class Runner:
     @staticmethod
     def _plan(wf):
         return [{"id": s["id"], "name": s["name"], "agents": s["agents"],
-                 "retries": s["retries"], "check": s["check"], "review": s["review"], "dependsOn": s["dependsOn"],
+                 "retries": s["retries"], "check": s["check"], "judge": s.get("judge", ""), "review": s["review"],
+                 "dependsOn": s["dependsOn"],
                  "loopBack": s["loopBack"], "onSuccess": s["onSuccess"], "onFailure": s["onFailure"],
                  "kind": s.get("kind", "claude"), "run": s.get("run", "")}
                 for s in wf["steps"]]
@@ -1161,9 +1196,12 @@ class Runner:
             run["attempts"].append(rec)
             run["current"] = step["id"]
             self._link(run, step, session, attempt, resume or (prev_session if not revision else None), revision, loop)
+            rec["before"] = quality.snapshot(wf["cwd"])  # checkpoint: lets the user see this step's diff and rewind it
             self._changed(run)
 
             ok, out, reason, cost = self._invoke(wf, run, step, prompt, session, resume=resume)
+            rec["after"] = quality.snapshot(wf["cwd"]) if rec["before"] else None
+            rec["usage"] = self.usage.pop(session, None)
             with self.lock:
                 steered = (run.get("_steer") or {}).pop(step["id"], None)
             if steered is not None and not run["stop"]:  # the user steered it mid-step: continue with their message
@@ -1177,6 +1215,9 @@ class Runner:
             resume, steer, interrupted = None, "", False
             if ok and step["check"] and not run["stop"]:
                 ok, reason = self._check(wf, step)
+            if ok and step.get("judge") and not run["stop"]:
+                ok, reason, judge_cost = self._judge(wf, run, step, rec, out)
+                cost += judge_cost
             rec.update(status="ok" if ok else ("stopped" if run["stop"] else "failed"), ended=time.time(),
                        cost=cost, error="" if ok else reason, output=out[-4000:])
             run["cost"] += cost
@@ -1321,6 +1362,7 @@ class Runner:
             return False, "", f"claude exited with code {proc.returncode}: {tail}", 0.0
         out = str(res.get("result") or "")
         cost = float(res.get("total_cost_usd") or 0) if provider == "claude" else 0.0  # local models are free
+        self.usage[session] = _usage(res)
         if proc.returncode != 0 or res.get("is_error"):
             return False, out, f"{res.get('subtype') or 'error'}: {out[-400:]}", cost
         if len(agents) > 1 and not resume:  # several subagents: each one must have been used (a steer may not need them again)
@@ -1351,6 +1393,7 @@ class Runner:
         run["attempts"].append(rec)
         run["current"] = step["id"]
         self._link(run, step, session, attempt, prev_session if not revision else None, revision, loop)
+        rec["before"] = quality.snapshot(wf["cwd"])
         self._changed(run)
         env = dict(os.environ, STEP_INPUT=prev_out or "", STEP_NOTES=notes or "", WORKFLOW_NAME=wf["name"],
                    WORKFLOW_RUN=run["id"], STEP_ID=step["id"], STEP_ATTEMPT=str(attempt))
@@ -1379,12 +1422,92 @@ class Runner:
                 ok = True
         except OSError as exc:
             out, reason = "", f"couldn't run the command: {exc}"
+        rec["after"] = quality.snapshot(wf["cwd"]) if rec["before"] else None
         if ok and step["check"] and not run["stop"]:
             ok, reason = self._check(wf, step)
+        if ok and step.get("judge") and not run["stop"]:
+            ok, reason, rec["cost"] = self._judge(wf, run, step, rec, out)
+            run["cost"] += rec["cost"]
         rec.update(status="ok" if ok else ("stopped" if run["stop"] else "failed"), ended=time.time(),
                    error="" if ok else reason, output=out[-4000:])
         self._changed(run)
         return ok, out, reason, rec
+
+    def _judge(self, wf, run, step, rec, out):
+        """The AI judge grades this attempt against the step's criteria. Returns (ok, reason, cost)."""
+        rec["judge"] = {"status": "running"}
+        self._changed(run)
+        # Retries and revisions build on the files earlier attempts left, so judge everything since the step began
+        # (this round of it), not just the last attempt's own changes.
+        base = next((a.get("before") for a in run["attempts"] if a["step"] == step["id"] and a.get("before")
+                     and a.get("replay", 0) == rec.get("replay", 0) and a.get("loop", 0) == rec.get("loop", 0)),
+                    rec.get("before"))
+        try:
+            v = quality.judge(step["judge"], step["prompt"] or "$ " + step["run"], out, wf["cwd"], base,
+                              rec.get("after"), _written_files(rec["session"]), wf.get("judgeModel"), compat.claude_cmd())
+        except ValueError as exc:
+            rec["judge"] = {"status": "error", "error": str(exc)}
+            return False, f"AI judge: {exc}", 0.0
+        rec["judge"] = dict(v, status="pass" if v["pass"] else "fail")
+        self._changed(run)
+        if v["pass"]:
+            return True, "", v["cost"]
+        unmet = "\n".join(f"- {c.get('criterion')}: {c.get('evidence')}" for c in v["criteria"] if not c.get("met"))
+        return False, (f"the AI judge scored it {v['score']}/100 and it doesn't meet the acceptance criteria yet."
+                       + (f"\nNot met:\n{unmet}" if unmet else "") + f"\nWhat to fix: {v['feedback']}"), v["cost"]
+
+    def _attempt(self, rid, session):
+        with self.lock:
+            run = self.runs.get(rid)
+            if not run:
+                raise ValueError("Run not found.")
+            att = next((a for a in run["attempts"] if a["session"] == session), None)
+        if not att:
+            raise ValueError("That step attempt isn't part of this run.")
+        return run, att
+
+    def changes(self, rid, session):
+        """The exact diff one step attempt made to the project folder (from its before/after checkpoints)."""
+        run, att = self._attempt(rid, session)
+        if not att.get("before"):
+            return {"available": False, "reason": "No checkpoints for this step: the project folder isn't a git "
+                                                  "repository, or the run is from before checkpoints existed."}
+        if not att.get("after"):
+            return {"available": False, "reason": "This step is still working. Its changes show when it finishes."}
+        try:
+            return dict(quality.diff(run["cwd"], att["before"], att["after"]), available=True,
+                        rewound=(run.get("rewound") or {}).get("session") == session)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"available": False, "reason": f"Couldn't read the checkpoints: {exc}"}
+
+    def rewind(self, rid, session):
+        """Put the project folder back as it was just before this step attempt started."""
+        run, att = self._attempt(rid, session)
+        if run["status"] in ("running", "waiting"):
+            raise ValueError("Stop the run (or let it finish) before rewinding, so no step is changing files.")
+        if not att.get("before"):
+            raise ValueError("This step has no checkpoint to go back to.")
+        try:
+            undo = quality.restore(run["cwd"], att["before"])
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError(f"Couldn't rewind: {exc}")
+        run["rewound"] = {"session": session, "name": att["name"], "undo": undo, "t": time.time()}
+        self._changed(run)
+        return run["rewound"]
+
+    def undo_rewind(self, rid):
+        with self.lock:
+            run = self.runs.get(rid)
+        if not run or not run.get("rewound"):
+            raise ValueError("There's no rewind to undo.")
+        if run["status"] in ("running", "waiting"):
+            raise ValueError("Stop the run before undoing the rewind.")
+        try:
+            quality.restore(run["cwd"], run["rewound"]["undo"])
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError(f"Couldn't undo the rewind: {exc}")
+        run.pop("rewound")
+        self._changed(run)
 
     def _check(self, wf, step):
         try:

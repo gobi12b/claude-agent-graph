@@ -48,15 +48,18 @@ and comments you add here are kept when the app saves.
     dependsOn: [step ids]   default: the step above it. [] = starts right away
     model: opus | sonnet | haiku     retries: 0-10      review: true (pause for you)
     check: shell command that must succeed for the step to pass
+    judge: acceptance criteria in plain words; an AI judge grades the step's diff against them,
+           and a failing verdict fails the step (its feedback goes to the retry / loop-back)
     agents: [subagent names]   one: the step runs as that subagent; several: it must use them all
     loopBack: {to: <earlier step id>, when: failure | success, max: 3}
         go back and redo from that step (and everything after it), up to max times
     onSuccess: next | end           onFailure: stop | continue
   agents: subagents the steps can delegate to (name: description, prompt, tools, model)
   permissionMode: acceptEdits | auto | dontAsk | plan | bypassPermissions
+  judgeModel: the Claude model the AI judge uses (default haiku)
 """
 
-STEP_DEFAULTS = {"model": "", "retries": 0, "check": "", "review": False, "agents": [],
+STEP_DEFAULTS = {"model": "", "retries": 0, "check": "", "judge": "", "review": False, "agents": [],
                  "onSuccess": "next", "onFailure": "stop", "loopBack": None}
 
 _lock = threading.Lock()
@@ -101,6 +104,8 @@ def to_doc(wf):
             d[k] = list(wf[k])
     if wf.get("maxBudgetUsd") is not None:
         d["maxBudgetUsd"] = wf["maxBudgetUsd"]
+    if wf.get("judgeModel"):
+        d["judgeModel"] = wf["judgeModel"]
     if wf.get("agents"):
         d["agents"] = {a["name"]: {k: a[k] for k in ("description", "model", "tools", "prompt") if a.get(k)}
                        for a in wf["agents"]}
@@ -579,10 +584,10 @@ def save_user_step(key, step, old_key=None):
                                    "a template with the same key as a default one replaces it.")
     steps = doc.setdefault("steps", CommentedMap())
     spec = {}
-    for k in ("icon", "name", "prompt", "run", "check", "model", "retries", "review", "agents"):
+    for k in ("icon", "name", "prompt", "run", "check", "judge", "model", "retries", "review", "agents"):
         v = step.get(k)
         if v not in (None, "", [], False, 0):
-            spec[k] = LiteralScalarString(v) if k in ("prompt", "run") and "\n" in str(v) else v
+            spec[k] = LiteralScalarString(v) if k in ("prompt", "run", "judge") and "\n" in str(v) else v
     steps[key] = _fresh(spec)
     _dump(USER_STEPS, doc)
     return load_defaults()

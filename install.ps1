@@ -66,6 +66,13 @@ if ($Exe) {
     $Shell = New-Object -ComObject WScript.Shell
     $Shortcut = $Shell.CreateShortcut($Lnk)
     $Shortcut.TargetPath = $Exe
+    $IconDir = Join-Path $env:LOCALAPPDATA "claude-agent-graph"
+    $Ico = Join-Path $IconDir "icon.ico"
+    try {
+        New-Item -ItemType Directory -Force -Path $IconDir | Out-Null
+        Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/agent_graph/assets/icon.ico" -OutFile $Ico
+        $Shortcut.IconLocation = $Ico
+    } catch { }  # offline: the shortcut keeps the default icon
     $Shortcut.WindowStyle = 7  # minimized console
     $Shortcut.Save()
     Say "Added 'Claude Agent Graph' to the Start menu."
