@@ -17,11 +17,89 @@ Runs on **macOS, Linux and Windows**.
 
 ## Requirements
 
+Every platform needs these three things:
+
 | | |
 |---|---|
-| **Claude Code** | The `claude` CLI on your `PATH`, signed in. [Install it here](https://claude.com/claude-code). |
+| **Claude Code** | The `claude` CLI on your `PATH`, signed in (run `claude` once and log in). |
 | **Python** | 3.9 or newer |
 | **git** | Used by the installer. On Windows, Git for Windows also supplies the bash that shell steps use. |
+
+Check what you already have:
+
+```sh
+claude --version
+python3 --version   # Windows: py --version
+git --version
+```
+
+## Prerequisites by platform
+
+### macOS
+
+1. **Command Line Tools.** These provide `git` and a `python3` (3.9):
+   ```sh
+   xcode-select --install
+   ```
+   If you'd rather have a newer Python, run `brew install python` ([Homebrew](https://brew.sh)).
+2. **Claude Code:**
+   ```sh
+   curl -fsSL https://claude.ai/install.sh | bash
+   claude   # sign in once
+   ```
+3. *Optional:* `brew install uv` (or `brew install pipx`) for a cleaner install and easy upgrades.
+
+The native window (pywebview) is installed automatically and uses the WebKit built into macOS. Nothing else is needed.
+
+### Linux
+
+1. **Python, venv and git.** Some distros split `venv` into its own package, so install it explicitly:
+
+   | Distro | Command |
+   |---|---|
+   | Debian / Ubuntu / Mint | `sudo apt install python3 python3-venv python3-pip git` |
+   | Fedora | `sudo dnf install python3 python3-pip git` |
+   | Arch | `sudo pacman -S python python-pip git` |
+   | openSUSE | `sudo zypper install python3 python3-pip git` |
+
+2. **Claude Code:**
+   ```sh
+   curl -fsSL https://claude.ai/install.sh | bash
+   claude   # sign in once
+   ```
+3. *Optional, for a native window* instead of a browser tab:
+
+   | Distro | Command |
+   |---|---|
+   | Debian / Ubuntu / Mint | `sudo apt install python3-gi gir1.2-webkit2-4.1` |
+   | Fedora | `sudo dnf install python3-gobject webkit2gtk4.1` |
+   | Arch | `sudo pacman -S python-gobject webkit2gtk-4.1` |
+
+4. *Optional, for desktop notifications:* `notify-send` (Debian/Ubuntu: `sudo apt install libnotify-bin`; most desktops already have it).
+5. *Optional, for file opening:* `xdg-utils`, which most desktops already include.
+6. *Optional:* [uv](https://docs.astral.sh/uv/) or `pipx` (`sudo apt install pipx`).
+
+### Windows 10 / 11
+
+1. **Git for Windows.** Claude Code needs it too, and its Git Bash runs the workflows' shell steps:
+   ```powershell
+   winget install --id Git.Git -e
+   ```
+   You can also download it from [git-scm.com](https://git-scm.com/download/win).
+2. **Python 3.9+:**
+   ```powershell
+   winget install --id Python.Python.3.12 -e
+   ```
+   You can also use the [python.org installer](https://www.python.org/downloads/); in that case, tick **"Add python.exe to PATH"**.
+3. **Claude Code** (in PowerShell):
+   ```powershell
+   irm https://claude.ai/install.ps1 | iex
+   claude   # sign in once
+   ```
+4. **Open a new terminal** after installing, so the updated `PATH` is picked up.
+5. *Optional:* `winget install --id astral-sh.uv -e` for a cleaner install and easy upgrades.
+
+The native window uses the Microsoft Edge **WebView2** runtime, which comes preinstalled on Windows 10 and 11. Without it, the app opens in your browser.
 
 ## Install
 
