@@ -728,6 +728,7 @@ class Runner:
                                        "notes": rev.get("feedback", "") if rev.get("status") == "approved" else ""}
             run["replay"] = run.get("replay", 0) + 1
             run.update(status="running", ended=None, stop=False, error="", plan=self._plan(wf), pid=os.getpid())
+            run.pop("rewound", None)  # the folder moves on: undoing that rewind now would wipe out this replay's work
             run.pop("external", None)
             self.own.add(rid)
             run["_steer"] = {}

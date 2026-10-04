@@ -757,6 +757,8 @@ function renderDetails(n) {
 }
 
 const TOKEN = "__TOKEN__";
+const HOME = "__HOME__";  // your home folder, so paths can be shown as ~/…
+const tilde = p => HOME && (p === HOME || p.startsWith(HOME + "/") || p.startsWith(HOME + "\\")) ? "~" + p.slice(HOME.length) : p;
 const killUi = { id: null, armed: false, busy: false, timer: 0, msg: "", ok: false, for: null };
 document.getElementById("details").addEventListener("click", e => {
   const o = e.target.closest("[data-openrun]"); if (o) openRun(o.dataset.openrun);
@@ -1322,7 +1324,7 @@ function renderWorkflows() {
   if (el.querySelector(".more[open]")) return;  // don't close a menu the user has open
   const lastRun = id => runs.find(r => r.workflowId === id);
   const cards = workflows.map(w => {
-    const lr = lastRun(w.id), folder = (w.cwd || w.file || "").replace(/^\/home\/[^/]+/, "~").replace(/\/\.claude\/workflows\/.*$/, "");
+    const lr = lastRun(w.id), folder = tilde(w.cwd || w.file || "").replace(/\/\.claude\/workflows\/.*$/, "");
     const chips = w.steps.slice(0, 5).map(s => `<span class="s">${s.kind === "bash" ? "⌨ " : ""}${esc(s.name)}</span>`).join(`<span class="a">→</span>`)
       + (w.steps.length > 5 ? `<span class="a">→</span><span class="s">+${w.steps.length - 5} more</span>` : "");
     const reviews = w.steps.filter(s => s.review).length;
@@ -1504,7 +1506,7 @@ function openEditor(wf, preset) {
   document.getElementById("bsynced").textContent = draft.file ? "⟳ synced with " + baseName(draft.file) : "";
   document.getElementById("bsynced").title = draft.file || "";
   document.getElementById("bname").value = draft.name;
-  document.getElementById("bcwd").value = draft.cwd;
+  document.getElementById("bcwd").value = tilde(draft.cwd || "");
   document.getElementById("bmodel").innerHTML = modelOpts(draft.model || "", "Default (Claude)");
   document.getElementById("bmodel").value = draft.model || "";
   loadModels();  // pick up a model tool installed since the app started
@@ -1998,7 +2000,7 @@ document.getElementById("rvidesel").addEventListener("change", async e => {
   catch (err) { document.getElementById("rvmsg").textContent = err.message; }
 });
 document.getElementById("rvide").addEventListener("click", async () => {
-  try { const n = await api("/api/runs/ide", { id: rv.id }); document.getElementById("rvmsg").textContent = `Opened ${rv.run.cwd.replace(/^\/home\/[^/]+/, "~")} in ${n}.`; }
+  try { const n = await api("/api/runs/ide", { id: rv.id }); document.getElementById("rvmsg").textContent = `Opened ${tilde(rv.run.cwd)} in ${n}.`; }
   catch (e) { document.getElementById("rvmsg").textContent = e.message; }
 });
 
@@ -2030,7 +2032,7 @@ async function refreshRun(force) {
 
 const fmtMoney = v => "$" + (v || 0).toFixed(2);
 const baseName = p => p.split("/").pop();
-const dirName = p => p.slice(0, p.lastIndexOf("/")).replace(/^\/home\/[^/]+/, "~");
+const dirName = p => tilde(p.slice(0, p.lastIndexOf("/")));
 function stepState(attempts, run) {
   if (!attempts.length) return run.status === "running" || run.status === "waiting" ? "pending" : "skipped";
   const last = attempts.at(-1);

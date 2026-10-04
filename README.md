@@ -1,8 +1,25 @@
-# Claude Agent Graph
+<p align="center"><img src="agent_graph/assets/icon.png" width="112" alt="Claude Agent Graph icon"></p>
+
+<h1 align="center">Claude Agent Graph</h1>
 
 A live, visual map of everything [Claude Code](https://claude.com/claude-code) is doing on your machine: your sessions, the helper agents (subagents) they start, and the messages between them. It also includes a drag-and-drop **workflow builder** that chains Claude steps and shell steps, with retries, checks, review pauses and loop-backs.
 
 Runs on **macOS, Linux and Windows**.
+
+![A workflow run: each step's result, checked by the AI judge against its acceptance criteria](docs/screenshots/run-judge.png)
+
+## Screenshots
+
+The screenshots come from a small demo project: a to-do app with a planted bug, fixed by the sample **Fix a bug** workflow running on Claude Haiku. The whole run cost $0.12.
+
+| | |
+|---|---|
+| ![Home](docs/screenshots/home.png) | ![Live map](docs/screenshots/live-map.png) |
+| **Home.** What needs you, what's running, recent runs and their cost. | **Live map.** Every Claude Code session, workflow and helper agent, and how they hand work to each other. |
+| ![Workflows](docs/screenshots/workflows.png) | ![Workflow builder](docs/screenshots/builder.png) |
+| **Workflows.** Your saved workflows, plus ready-made samples to start from. | **Builder.** Steps, review pauses, a free shell step that loops back to “Fix it” if the tests fail, and the AI judge's acceptance criteria. |
+| ![AI judge verdict](docs/screenshots/run-judge.png) | ![Step diff and rewind](docs/screenshots/run-changes.png) |
+| **AI judge.** Each criterion met or not, with evidence from the diff, plus token use and prompt-cache hit rate. | **Changes.** Exactly what a step changed, with one click to rewind the folder to before it. |
 
 ## Features
 

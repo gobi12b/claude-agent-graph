@@ -193,7 +193,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(403)
         if self.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "index.html"), "rb") as f:
-                body = f.read().replace(b"__TOKEN__", TOKEN.encode())
+                body = f.read().replace(b"__TOKEN__", TOKEN.encode()).replace(
+                    b"__HOME__", json.dumps(os.path.expanduser("~"))[1:-1].encode())
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
