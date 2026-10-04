@@ -7,9 +7,8 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-pub type Obj = Map<String, Value>;
 pub type Res<T> = Result<T, String>;
 
 // ---- paths ------------------------------------------------------------------------------

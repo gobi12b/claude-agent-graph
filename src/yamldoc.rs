@@ -126,7 +126,7 @@ fn is_blank_or_comment(line: &str) -> bool {
 fn key_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"^(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^\s'"#\[\]{},&*!|>%@`?-][^#]*?|-[^\s#][^#]*?))[ \t]*:(?:[ \t]+(.*)|$)"#)
+        Regex::new(r##"^(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^\s'"#\[\]{},&*!|>%@`?-][^#]*?|-[^\s#][^#]*?))[ \t]*:(?:[ \t]+(.*)|$)"##)
             .unwrap()
     })
 }
@@ -612,7 +612,7 @@ fn literal(s: &str, indent: usize) -> (String, Vec<String>) {
     };
     let indicator = if body.starts_with(' ') || body.starts_with('\n') { "2" } else { "" };
     let mut lines: Vec<String> = body.split('\n').map(|l| if l.is_empty() { String::new() } else { format!("{}{l}", pad(indent)) }).collect();
-    lines.extend(std::iter::repeat(String::new()).take(trailing.saturating_sub(1)));
+    lines.extend(std::iter::repeat_n(String::new(), trailing.saturating_sub(1)));
     (format!("|{indicator}{chomp}"), lines)
 }
 
@@ -730,9 +730,9 @@ mod tests {
     #[test]
     fn indentless_lists_and_flow_lists() {
         let old = "agents:\n  x:\n    tools: [Read,\n      Grep]\nsteps:\n- id: a\n  agents: [x]\n";
-        let new = json!({"agents": {"x": {"tools": ["Read", "Grep"]}}, "steps": [{"id": "a", "agents": ["x", "y"]}]});
+        let new = json!({"agents": {"x": {"tools": ["Read", "Grep"]}}, "steps": [{"id": "a", "agents": ["x", "z"]}]});
         let text = dump(Some(old), &new, "");
-        assert_eq!(text, "agents:\n  x:\n    tools: [Read,\n      Grep]\nsteps:\n  - id: a\n    agents: [x, y]\n");
+        assert_eq!(text, "agents:\n  x:\n    tools: [Read,\n      Grep]\nsteps:\n  - id: a\n    agents: [x, z]\n");
         assert_eq!(parse(&text).unwrap(), new);
     }
 
