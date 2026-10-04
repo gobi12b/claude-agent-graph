@@ -23,7 +23,7 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 
 ## Features
 
-- **Live graph** of Claude Code sessions and subagents, built by tailing the transcripts in `~/.claude`
+- **Live graph** of Claude Code sessions and subagents, built by tailing the transcripts in `~/.claude`. By default it shows what's live: open sessions and running workflows. The filter bar at its top-right adds **Older** activity from a time range you pick.
 - **Activity feed**: prompts, helper starts and hand-backs, files written or edited
 - **Stop a running session** from the graph
 - **Workflow builder**: steps run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible
@@ -38,6 +38,7 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 - **Agent library**: ready-made subagent roles (product owner, architect, reviewer, tester, …) you can drop into steps
 - **Permissions editor** for `~/.claude/settings.json`
 - Workflows are plain YAML in `<project>/.claude/workflows/`, so they're versioned with your code and editable by hand
+- **Rust version only, for now:** [run inputs, a separate copy of the project per run, and delivery as a branch or pull request](#rust-version-only-run-inputs-separate-copies-and-branches)
 
 ## Requirements
 
@@ -162,7 +163,7 @@ python -m agent_graph
 
 ## Rust version (single binary)
 
-The app is also written in Rust (`src/`). It has the same features, the same UI, and the same files on disk (workflows, runs, settings), so you can switch between the Python and Rust versions freely. You get one self-contained `agent-graph` program: no Python, no virtual environment, faster start-up and lower memory use. The UI, icons and built-in agent, step and sample files are compiled into it.
+The app is also written in Rust (`src/`). It has every feature of the Python version, plus [run inputs, separate copies and branches](#rust-version-only-run-inputs-separate-copies-and-branches). It uses the same UI and the same files on disk (workflows, runs, settings), so you can switch between the two versions freely. You get one self-contained `agent-graph` program: no Python, no virtual environment, faster start-up and lower memory use. The UI, icons and built-in agent, step and sample files are compiled into it.
 
 ### Prerequisites
 
@@ -180,7 +181,7 @@ Open a new terminal afterwards, then check: `cargo --version`.
 
 ```sh
 # straight from GitHub (puts agent-graph in ~/.cargo/bin, which rustup adds to PATH)
-cargo install --git https://github.com/gobi12b/claude-agent-graph --branch rust-rewrite
+cargo install --git https://github.com/gobi12b/claude-agent-graph
 
 # or from a clone
 git clone https://github.com/gobi12b/claude-agent-graph
@@ -188,7 +189,7 @@ cd claude-agent-graph
 cargo install --path .              # or: cargo build --release  →  target/release/agent-graph(.exe)
 ```
 
-Everything works the same as the Python version: `agent-graph`, `agent-graph --browser`, `agent-graph --port 9000`, and the terminal commands (`list`, `run`, `validate`, `runs`).
+Everything works the same as the Python version: `agent-graph`, `agent-graph --browser`, `agent-graph --port 9000`, and the terminal commands (`list`, `run`, `validate`, `runs`, plus `clean` in the Rust version).
 
 ### Native window (optional)
 
@@ -269,6 +270,8 @@ agent-graph run ./flows/nightly.yaml -C ~/code/app   # ...in another project fol
 agent-graph run fix-a-bug --yes                   # approve review points automatically (scripts, CI)
 agent-graph validate ./flows/*.yaml               # check workflow files without running them
 agent-graph runs                                  # recent runs: id, when, status, duration, cost
+agent-graph run "Fix a bug" --input bug="Login fails on Safari"   # Rust: give the workflow's inputs
+agent-graph clean                                 # Rust: remove the separate copies of finished runs
 ```
 
 | Option | For |
@@ -278,6 +281,9 @@ agent-graph runs                                  # recent runs: id, when, statu
 | `-y`, `--yes` | Approve every review point without asking. |
 | `-q`, `--quiet` | Don't print the final step's result at the end. |
 | `--json` | Print a JSON summary (status, cost, each step's output) instead of progress. Also works with `list` and `runs`. |
+| `-i`, `--input NAME=VALUE` | Rust: a value for one of the workflow's inputs. Repeat it for more. |
+| `--inputs <file.json>` | Rust: input values from a JSON file (`--input` wins over it). |
+| `--isolation worktree\|none` | Rust: run in a separate copy of the project, or in the folder itself, whatever the workflow says. |
 | `runs -n 30` | How many recent runs to list (default 15). |
 
 **Review points.** When a step pauses for review, the terminal shows that step's result and asks:
@@ -354,7 +360,7 @@ agent-graph validate .claude/workflows/*.yaml --strict
 | Code | Meaning |
 |---|---|
 | `0` | Finished successfully |
-| `1` | A step failed, or the workflow wasn't found |
+| `1` | A step failed, the workflow wasn't found, a required input is missing, or (Rust) the branch or pull request couldn't be made |
 | `2` | Stopped (`Ctrl+C`, Stop in the app, or `s` at a review) |
 | `3` | Paused for review, but there was no terminal to answer it (use `--yes`) |
 
@@ -436,6 +442,7 @@ Each Claude step's **Result** tab shows the tokens it read and wrote, its number
 | Your workflows | `<project>/.claude/workflows/<id>.yaml` |
 | Your agent and step additions | `~/.config/claude-agent-graph/agents.yaml`, `steps.yaml` |
 | Run history and logs | `~/.config/claude-agent-graph/runs/` |
+| Separate copies of runs (`isolation: worktree`, Rust) | `~/.config/claude-agent-graph/worktrees/` (remove finished ones with `agent-graph clean`) |
 | Built-in agent library, step templates and sample workflows | `agent_graph/defaults/` (`agents.yaml`, `steps.yaml`, `samples.yaml`) |
 
 On Windows, `~` means your user folder (`C:\Users\<you>`).
@@ -489,9 +496,11 @@ src/
   wfstore.rs    workflow and defaults storage
   yamldoc.rs    YAML that keeps your comments on save
   quality.rs    step checkpoints (diff, rewind) and the AI judge
+  template.rs   run inputs and {{ … }} templates
+  worktree.rs   separate copies of runs, apply, branches and pull requests
   providers.rs  Claude, Gemini, GPT and Ollama
   compat.rs     the Linux / macOS / Windows differences
-  cli.rs        list / run / validate / runs
+  cli.rs        list / run / validate / runs / clean
 ```
 
 Both versions serve the same `agent_graph/index.html`.
