@@ -129,11 +129,16 @@
     .pg { padding: 20px 16px 48px; } .ehead { flex-wrap: wrap; } .form .row2 { grid-template-columns: 1fr; }
   }
   button:focus-visible, summary:focus-visible, .block:focus-visible { outline: 2px solid var(--prompt); outline-offset: 2px; }
-  .onlyrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  #filters { position: absolute; top: 12px; right: 14px; max-width: calc(100% - 28px); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 6px 8px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.08); z-index: 2; }
+  #filters .frow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  #filters .flabel { font-size: 12px; color: var(--muted); font-weight: 600; margin-right: 2px; }
+  #filters .chip { padding: 3px 10px; font-size: 12px; }
+  #windowrow[hidden] { display: none; }
   .chip.tog::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
     border: 1.5px solid currentColor; vertical-align: 1px; }
   .chip.tog.on::before { background: currentColor; }
-  #windows.muted .chip { opacity: .45; }
   #liveempty { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; color: var(--muted); font-size: 14px; }
   #liveempty.on { display: grid; }
   #welcome { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; padding: 24px; }
@@ -499,6 +504,13 @@
   <div id="stage">
     <canvas id="c"></canvas>
     <div id="hud"></div>
+    <div id="filters" role="group" aria-label="What the map shows">
+      <div class="frow"><span class="flabel">Show</span>
+        <button class="chip tog" data-show="sessions" title="Claude sessions that are open now, with their helpers">Live sessions</button>
+        <button class="chip tog" data-show="flows" title="Workflows that are running or waiting for your review, with their steps and helpers">Running workflows</button>
+        <button class="chip tog" data-show="older" title="Also show closed sessions and finished workflows from the time range you pick">Older</button></div>
+      <div class="frow" id="windowrow"><span class="flabel">from</span><span class="chips" id="windows"></span></div>
+    </div>
     <div id="tip"></div>
     <div class="zoomctl" id="zoomctl"><button data-z="out" title="Zoom out (−)">−</button><span id="zoompct">100%</span><button data-z="in" title="Zoom in (+)">+</button><button class="fit" data-z="fit" title="Fit everything on screen (0)">⤢ Fit</button></div>
     <details id="legend"><summary>What do the colours mean?</summary>
@@ -527,14 +539,6 @@
     </div></div>
   </div>
   <aside>
-    <section>
-      <h2>Show activity from</h2>
-      <div class="chips" id="windows"></div>
-      <div class="onlyrow"><span>Only show</span><div class="chips" id="onlylive">
-        <button class="chip tog" data-only="sessions" aria-pressed="false" title="Only Claude sessions that are open now, with their helpers">Live sessions</button>
-        <button class="chip tog" data-only="flows" aria-pressed="false" title="Only workflows that are running or waiting for your review, with their steps and helpers">Running workflows</button>
-      </div></div>
-    </section>
     <section id="details"><div class="empty">Click a circle or square on the left to see what it is doing.</div></section>
     <nav class="tabs" id="tabs" role="tablist">
       <button data-tab="progress" role="tab">Now<span class="n" id="ncount" hidden></span></button>
@@ -562,18 +566,20 @@
   <footer id="mfoot"></footer>
 </div></div>
 <script>
-const WINDOWS = [["Running now", 0], ["Last hour", 3600], ["Today", 86400], ["This week", 604800], ["All time", Infinity]];
+const WINDOWS = [["Last hour", 3600], ["Today", 86400], ["This week", 604800], ["All time", Infinity]];
 // plain words for the server's status / kind values
 const STATUS_WORD = { busy: "Working", running: "Working", idle: "Waiting for you", live: "Open", ended: "Closed", done: "Done",
   succeeded: "Done", ok: "Done", failed: "Failed", stopped: "Stopped", waiting: "Needs your review", pending: "Not started yet", skipped: "Skipped", steered: "Steered by you" };
 const KIND_WORD = { session: "Claude session", agent: "Helper agent", workflow: "Workflow", you: "You" };
 const word = (map, v) => map[v] || v || "";
-let windowSec = 86400;
+let windowSec = 86400;  // how far back "Older" reaches
 try { const s = localStorage.getItem("ag-window"); if (s !== null) windowSec = s === "Infinity" ? Infinity : +s; } catch {}
-// "Only show" toggles: open sessions and/or running (or review-waiting) workflows, each with their helpers.
-// While either is on, the time filter doesn't apply.
-const only = { sessions: false, flows: false };
-try { only.sessions = localStorage.getItem("ag-livesessions") === "1"; only.flows = localStorage.getItem("ag-liveflows") === "1"; } catch {}
+if (!WINDOWS.some(([, w]) => w === windowSec)) windowSec = 86400;
+// What the map shows (any mix): open sessions, running (or review-waiting) workflows, and older activity
+// from the chosen time range. Live sessions and running workflows are on by default.
+const show = { sessions: true, flows: true, older: false };
+try { Object.assign(show, JSON.parse(localStorage.getItem("ag-show") || "{}")); } catch {}
+const saveShow = () => { try { localStorage.setItem("ag-show", JSON.stringify(show)); localStorage.setItem("ag-window", String(windowSec)); } catch {} };
 
 const canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -614,33 +620,26 @@ const rootOf = n => { let c = n, guard = 0; while (c && c.kind === "agent" && gu
 
 function visibleIds() {
   const t = now(), ids = new Set(["you"]);
-  if (only.sessions || only.flows) {
-    if (only.flows) {
-      for (const r of runs) {
-        if (r.status !== "running" && r.status !== "waiting" && !r.finishing) continue;
-        ids.add("w:" + r.id);
-        for (const a of r.attempts) ids.add("s:" + a.session);
-      }
+  const recent = n => t - n.lastActive < windowSec;
+  if (show.flows) {
+    for (const r of runs) {
+      if (r.status !== "running" && r.status !== "waiting" && !r.finishing) continue;
+      ids.add("w:" + r.id);
+      for (const a of r.attempts) ids.add("s:" + a.session);
     }
-    if (only.sessions) {  // open sessions; workflow steps belong to the workflows toggle
-      for (const n of state.nodes) if (n.kind === "session" && !n.step && !n.workflowStep && !n.id.startsWith("n:") && n.status !== "ended") ids.add(n.id);
-    }
-    for (const n of state.nodes) {  // helpers started by what's shown
-      if (n.kind !== "agent") continue;
-      const r = rootOf(n);
-      if (r && ids.has(r.id)) ids.add(n.id);
-    }
-    return ids;
-  }
-  const sessionOk = n => n.status !== "ended" || (windowSec > 0 && t - n.lastActive < windowSec);
-  for (const n of state.nodes) {
-    if (n.kind === "session" && !n.id.startsWith("n:") && sessionOk(n)) ids.add(n.id);
-    if (n.kind === "workflow" && (n.status === "running" || (windowSec > 0 && t - n.lastActive < windowSec))) ids.add(n.id);
   }
   for (const n of state.nodes) {
+    if (n.kind === "session" && !n.id.startsWith("n:")) {
+      const stepOf = n.step || n.workflowStep;  // workflow steps come with their workflow
+      if (show.sessions && !stepOf && n.status !== "ended") ids.add(n.id);
+      if (show.older && recent(n)) ids.add(n.id);
+    }
+    if (n.kind === "workflow" && show.older && recent(n)) ids.add(n.id);
+  }
+  for (const n of state.nodes) {  // helpers come with what started them
     if (n.kind !== "agent") continue;
     const r = rootOf(n);
-    if ((r && ids.has(r.id)) || n.status === "running" || (windowSec > 0 && t - n.lastActive < windowSec)) ids.add(n.id);
+    if ((r && ids.has(r.id)) || (show.older && recent(n))) ids.add(n.id);
   }
   for (const e of state.edges) {  // named peers that are talking to something visible
     if (e.src.startsWith("n:") && ids.has(e.dst)) ids.add(e.src);
@@ -747,11 +746,13 @@ function renderHud() {
     `<div class="stat" title="${live} Claude session${live === 1 ? "" : "s"} open"><b>${busy}</b>working now</div>
      ${running ? `<div class="stat"><b>${running}</b>helper${running === 1 ? "" : "s"} running</div>` : ""}`;
   // first-run / quiet state: explain the app instead of showing an empty canvas
-  const filtering = only.sessions || only.flows;
-  document.getElementById("welcome").classList.toggle("on", vis.size <= 1 && !waiting.length && !filtering);
-  document.getElementById("liveempty").classList.toggle("on", vis.size <= 1 && filtering);
-  document.getElementById("liveemptytext").textContent = !filtering ? "" :
-    `${only.sessions && only.flows ? "No Claude sessions are open and no workflows are running" : only.sessions ? "No Claude sessions are open" : "No workflows are running"} right now. Turn off the “Only show” filter to see everything.`;
+  // empty map: explain the app, or say why nothing matches the filters
+  const empty = vis.size <= 1 && !waiting.length, none = !show.sessions && !show.flows && !show.older;
+  const welcome = empty && !none && !show.older;
+  document.getElementById("welcome").classList.toggle("on", welcome);
+  document.getElementById("liveempty").classList.toggle("on", empty && !welcome);
+  document.getElementById("liveemptytext").textContent = none ? "Everything is hidden. Turn on something to show at the top right."
+    : `Nothing ${show.sessions || show.flows ? "running now, and nothing " : ""}from ${{ 3600: "the last hour", 86400: "today", 604800: "this week" }[windowSec] || "any time"}.${windowSec === Infinity ? "" : " Pick a longer time range at the top right."}`;
   void hour;
 }
 
@@ -845,33 +846,22 @@ function select(id, center) {
   }
 }
 
-const winEl = document.getElementById("windows");
+const winEl = document.getElementById("windows"), showEl = document.querySelector("#filters .frow");
 winEl.innerHTML = WINDOWS.map(([l, s]) => `<button class="chip" data-s="${s}">${l}</button>`).join("");
-function markWindow() { for (const b of winEl.children) b.classList.toggle("on", +b.dataset.s === windowSec); }
+function markFilters() {
+  for (const b of winEl.children) b.classList.toggle("on", +b.dataset.s === windowSec);
+  for (const b of showEl.querySelectorAll("[data-show]")) { b.classList.toggle("on", show[b.dataset.show]); b.setAttribute("aria-pressed", show[b.dataset.show]); }
+  document.getElementById("windowrow").hidden = !show.older;
+}
 winEl.addEventListener("click", e => {
   const b = e.target.closest(".chip"); if (!b) return;
-  windowSec = +b.dataset.s; try { localStorage.setItem("ag-window", String(windowSec)); } catch {}
-  if (only.sessions || only.flows) {
-    only.sessions = only.flows = false;
-    try { localStorage.setItem("ag-livesessions", "0"); localStorage.setItem("ag-liveflows", "0"); } catch {}
-    markOnly();
-  }
-  markWindow(); renderHud();
+  windowSec = +b.dataset.s; saveShow(); markFilters(); renderHud();
 });
-markWindow();
-const onlyEl = document.getElementById("onlylive");
-function markOnly() {
-  for (const b of onlyEl.children) { b.classList.toggle("on", only[b.dataset.only]); b.setAttribute("aria-pressed", only[b.dataset.only]); }
-  winEl.classList.toggle("muted", only.sessions || only.flows);
-  winEl.title = only.sessions || only.flows ? "Not used while “Only show” is on" : "";
-}
-onlyEl.addEventListener("click", e => {
-  const b = e.target.closest(".chip"); if (!b) return;
-  only[b.dataset.only] = !only[b.dataset.only];
-  try { localStorage.setItem("ag-livesessions", only.sessions ? "1" : "0"); localStorage.setItem("ag-liveflows", only.flows ? "1" : "0"); } catch {}
-  markOnly(); renderHud();
+showEl.addEventListener("click", e => {
+  const b = e.target.closest("[data-show]"); if (!b) return;
+  show[b.dataset.show] = !show[b.dataset.show]; saveShow(); markFilters(); renderHud();
 });
-markOnly();
+markFilters();
 
 // ---- physics ------------------------------------------------------------
 const SPRING = { spawn: 120, message: 150, handback: 120, retry: 110 };
@@ -3727,8 +3717,7 @@ document.getElementById("helpbtn").addEventListener("click", openHelp);
 document.getElementById("wchelp").addEventListener("click", openHelp);
 document.getElementById("wcnew").addEventListener("click", () => { go("workflows"); openEditor(null); });
 document.getElementById("wcall").addEventListener("click", () => {
-  windowSec = Infinity; try { localStorage.setItem("ag-window", "Infinity"); } catch {}
-  markWindow(); renderHud();
+  show.older = true; windowSec = Infinity; saveShow(); markFilters(); renderHud();
 });
 loadWorkflows();
 

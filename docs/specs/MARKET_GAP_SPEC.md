@@ -541,7 +541,7 @@ Not done:
 
 ### Also shipped (not in this spec)
 
-- **"Only show" toggles** on the live map, under "Show activity from": **Live sessions** (open Claude sessions and their helpers) and **Running workflows** (running or review-waiting workflows with their steps and helpers). They can be combined, are remembered between visits, dim the time filter while on, and are switched off by picking a time range. Checked in a headless browser with real sessions and a running workflow.
+- **Map filters** in a bar at the top-right of the live map: **Live sessions** (open Claude sessions and their helpers) and **Running workflows** (running or review-waiting workflows with their steps and helpers) are on by default, and **Older** adds closed sessions and finished workflows from a time range (last hour, today, this week, any time) that appears while it's on. Any mix works, and the choice is remembered. This replaces the "Show activity from" box in the side panel. Checked in a headless browser with real data.
 
 ## Sources
 
