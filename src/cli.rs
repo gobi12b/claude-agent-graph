@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::runner::Runner;
+use crate::template;
 use crate::util::*;
 use crate::watcher::Graph;
 use crate::workflows::{self, pick};
@@ -53,7 +54,18 @@ enum Cmd {
         /// print a JSON summary at the end instead of progress
         #[arg(long)]
         json: bool,
+        /// a value for one of the workflow's inputs: --input bug="Login fails" (repeat for more)
+        #[arg(short = 'i', long = "input", value_name = "NAME=VALUE")]
+        input: Vec<String>,
+        /// input values from a JSON file ({"bug": "…"}); --input wins over it
+        #[arg(long, value_name = "FILE")]
+        inputs: Option<String>,
+        /// run in a separate git worktree (worktree), or in the folder itself (none)
+        #[arg(long, value_parser = ["none", "worktree"])]
+        isolation: Option<String>,
     },
+    /// remove the separate copies (worktrees) of finished runs
+    Clean,
     /// check workflows for mistakes without running them
     Validate {
         /// workflow files or names (default: every workflow the app knows)
@@ -277,7 +289,7 @@ fn ask_review(runner: &Runner, rid: &str, att: &Value) -> Option<()> {
 }
 
 fn live(run: &Value) -> bool {
-    matches!(s(run, "status").as_str(), "running" | "waiting")
+    matches!(s(run, "status").as_str(), "running" | "waiting") || b(run, "finishing")
 }
 
 fn wait_end(runner: &Runner, rid: &str, timeout: Duration) {
@@ -287,17 +299,64 @@ fn wait_end(runner: &Runner, rid: &str, timeout: Duration) {
     }
 }
 
-fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json: bool) -> i32 {
+/// Input values from --inputs FILE and --input NAME=VALUE; asks for missing required ones in a terminal.
+fn gather_inputs(wf: &Value, pairs: &[String], file: Option<&str>, ask: bool) -> Value {
+    let mut given = match file {
+        Some(f) => {
+            let text = std::fs::read_to_string(expanduser(f)).unwrap_or_else(|e| die(format!("{f}: {e}")));
+            serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).unwrap_or_else(|| die(format!("{f}: expected a JSON object of input values")))
+        }
+        None => json!({}),
+    };
+    for p in pairs {
+        let Some((k, v)) = p.split_once('=') else { die(format!("--input {p}: write it as NAME=VALUE")) };
+        given[k.trim()] = json!(v);
+    }
+    let defs = wf["inputs"].as_object().cloned().unwrap_or_default();
+    if ask {
+        for (name, d) in &defs {
+            if b(d, "required") && d["default"].is_null() && given.get(name).is_none_or(|v| template::as_text(v).trim().is_empty()) {
+                let mut q = if b(d, "description") { s(d, "description") } else { name.clone() };
+                if s(d, "type") == "choice" {
+                    q += &format!(" [{}]", str_list(d, "options").join("/"));
+                }
+                match input(&format!("{} {q}: ", c("36", "?"))) {
+                    Some(v) => given[name] = json!(v.trim()),
+                    None => die("No input given."),
+                }
+            }
+        }
+    }
+    given
+}
+
+fn cmd_clean() -> i32 {
+    let runner = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
+    let n = runner.clean();
+    println!("Removed {n} separate cop{} of finished runs.", if n == 1 { "y" } else { "ies" });
+    0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json: bool, pairs: &[String], inputs_file: Option<&str>, isolation: Option<&str>) -> i32 {
     // Ctrl+C here, or Stop in the app (which sends the same signal), stops the run cleanly.
     let _ = ctrlc::set_handler(|| {
         if INTERRUPTED.swap(true, Ordering::SeqCst) {
             std::process::exit(130); // pressed twice: give up waiting
         }
     });
-    let wf = target(workflow, folder);
+    let mut wf = target(workflow, folder);
+    if let Some(iso) = isolation {
+        wf["isolation"] = json!(iso);
+        if iso == "none" {
+            wf["deliver"] = Value::Null; // delivery needs a worktree
+        }
+        wf = workflows::validate(&wf).unwrap_or_else(|e| die(e));
+    }
+    let given = gather_inputs(&wf, pairs, inputs_file, std::io::stdin().is_terminal() && !as_json);
     let runner = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
     let interactive = std::io::stdin().is_terminal() && !yes;
-    let rid = runner.start(&s(&wf, "id"), Some(wf.clone())).unwrap_or_else(|e| die(e));
+    let rid = runner.start(&s(&wf, "id"), Some(wf.clone()), &given).unwrap_or_else(|e| die(e));
     if !as_json {
         println!("{}{}", c("1", &format!("▶ {}", s(&wf, "name"))), c("2", &format!("  ({} steps · run {rid})", arr(&wf, "steps").len())));
         println!("{}", c("2", &format!("  in {}   ·   Ctrl+C stops it", tilde(&s(&wf, "cwd")))));
@@ -374,7 +433,7 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
     let run = runner.get_run(&rid).unwrap_or_default();
     let status = s(&run, "status");
     if as_json {
-        let mut out = pick(&run, &["id", "name", "status", "started", "ended", "cost", "error"]);
+        let mut out = pick(&run, &["id", "name", "status", "started", "ended", "cost", "error", "inputs", "delivery", "worktree"]);
         let steps: Vec<Value> = arr(&run, "attempts")
             .iter()
             .map(|a| Value::Object(pick(a, &["name", "status", "attempt", "cost", "error", "output", "judge", "usage"])))
@@ -392,12 +451,27 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
         let took = format!("{} · ${:.2}", dur(ended - f(&run, "started")), f(&run, "cost"));
         let error = if b(&run, "error") { format!("\n  {}", s(&run, "error")) } else { String::new() };
         println!("{mark}  {}{error}", c("2", &took));
+        if let Some(d) = run.get("delivery").filter(|d| d.is_object()) {
+            if b(d, "branch") {
+                let pr = if b(d, "pr") { format!("  ·  PR {}", s(d, "pr")) } else if b(d, "pushed") { "  ·  pushed".into() } else { String::new() };
+                println!("  {} branch {}  ({} commit{}){pr}", c("36", "⎇"), s(d, "branch"), py_str(&d["commits"]), if d["commits"] == 1 { "" } else { "s" });
+            }
+            if b(d, "error") {
+                println!("  {} couldn't deliver: {}", c("31", "✗"), s(d, "error"));
+            }
+        }
+        if let Some(wt) = run.get("worktree").filter(|w| w.is_object() && !b(w, "removed")) {
+            println!("{}", c("2", &format!("  The run's separate copy is in {} (agent-graph clean removes it).", tilde(&s(wt, "folder")))));
+        }
         let last = arr(&run, "attempts").iter().rev().find(|a| s(a, "status") == "ok" && b(a, "output"));
         if let (Some(last), "succeeded", false) = (last, status.as_str(), quiet) {
             println!("{}", c("2", &format!("── result of “{}” ──", s(last, "name"))));
             println!("{}", last_chars(s(last, "output").trim(), 3000));
         }
         println!("{}", c("2", "Details: open the app (agent-graph) → Runs."));
+    }
+    if run.get("delivery").is_some_and(|d| b(d, "error")) && status == "succeeded" {
+        return 1;
     }
     match status.as_str() {
         "succeeded" => 0,
@@ -501,7 +575,10 @@ pub fn main(args: Vec<String>) -> i32 {
     let cli = Cli::parse_from(std::iter::once("agent-graph".to_string()).chain(args));
     match cli.cmd {
         Cmd::List { json } => cmd_list(json),
-        Cmd::Run { workflow, folder, yes, quiet, json } => cmd_run(&workflow, folder.as_deref(), yes, quiet, json),
+        Cmd::Run { workflow, folder, yes, quiet, json, input, inputs, isolation } => {
+            cmd_run(&workflow, folder.as_deref(), yes, quiet, json, &input, inputs.as_deref(), isolation.as_deref())
+        }
+        Cmd::Clean => cmd_clean(),
         Cmd::Validate { targets, folder, strict, json } => cmd_validate(&targets, folder.as_deref(), strict, json),
         Cmd::Runs { limit, json } => cmd_runs(limit, json),
     }

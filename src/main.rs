@@ -1,7 +1,7 @@
 //! Claude Agent Graph: a live view of your Claude Code sessions and subagents, plus a workflow builder and runner.
 //!
 //! Usage:  agent-graph [--browser] [--port N]
-//!         agent-graph list | run <workflow or file.yaml> | validate [files] | runs
+//!         agent-graph list | run <workflow or file.yaml> | validate [files] | runs | clean
 //! Opens a native window when built with the `window` feature; otherwise, or with --browser, serves on
 //! localhost and opens your default browser.
 
@@ -11,9 +11,11 @@ mod providers;
 mod quality;
 mod runner;
 mod server;
+mod template;
 mod util;
 mod watcher;
 mod wfstore;
+mod worktree;
 mod workflows;
 mod yamldoc;
 
@@ -24,7 +26,7 @@ use clap::Parser;
     name = "agent-graph",
     version,
     about = "Claude Agent Graph: a live view of your Claude Code sessions and subagents.",
-    after_help = "Terminal commands: agent-graph list | run <workflow or file.yaml> | validate [files] | runs  (add --help to each)"
+    after_help = "Terminal commands: agent-graph list | run <workflow or file.yaml> | validate [files] | runs | clean  (add --help to each)"
 )]
 struct Args {
     /// open in the default browser instead of a window
@@ -37,7 +39,7 @@ struct Args {
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    if argv.first().is_some_and(|a| ["run", "list", "runs", "validate"].contains(&a.as_str())) {
+    if argv.first().is_some_and(|a| ["run", "list", "runs", "validate", "clean"].contains(&a.as_str())) {
         // terminal commands, no window
         std::process::exit(cli::main(argv));
     }

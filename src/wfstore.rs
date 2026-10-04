@@ -39,6 +39,16 @@ and comments you add here are kept when the app saves.
   agents: subagents the steps can delegate to (name: description, prompt, tools, model)
   permissionMode: acceptEdits | auto | dontAsk | plan | bypassPermissions
   judgeModel: the Claude model the AI judge uses (default haiku)
+  inputs: values asked for when the workflow runs, used as {{ inputs.<name> }} in prompts, commands,
+          checks and judge criteria. Per input: description, type (string | text | number | boolean |
+          choice), required, default, options (for choice). Shorthand: `bug: What's going wrong?`
+          Templates can also use {{ steps.<id>.output }}, {{ run.id }}, {{ run.folder }} and the filters
+          default(…), slug, trim and json. In commands and checks each value is safely quoted.
+  isolation: worktree   run in a separate git worktree, so your folder and other runs are untouched
+    worktree: {base: HEAD, keep: always | onFailure | never, setup: shell command, copy: [.env]}
+  deliver: turn the run's changes into a branch, one commit per step (needs isolation: worktree)
+    {branch: agent-graph/{{ run.id }}, commit: perStep | squash, when: success | always,
+     push: true, pr: {draft: true, title: …, body: summary, base: main}}
 ";
 
 pub fn id_re() -> &'static Regex {
@@ -156,6 +166,32 @@ pub fn to_doc(wf: &Value) -> Value {
     if b(wf, "judgeModel") {
         d.insert("judgeModel".into(), wf["judgeModel"].clone());
     }
+    if wf.get("inputs").is_some_and(|i| i.as_object().is_some_and(|o| !o.is_empty())) {
+        let mut inputs = Map::new();
+        for (name, spec) in wf["inputs"].as_object().unwrap() {
+            let mut out = strip_defaults(spec, &json!({"description": "", "type": "string", "required": false, "default": null, "options": []}));
+            // `name: description` for a required text input with nothing else set
+            let only_desc = out.len() == 2 && out.get("required") == Some(&json!(true)) && out.contains_key("description");
+            inputs.insert(name.clone(), if only_desc { out.remove("description").unwrap() } else { Value::Object(out) });
+        }
+        d.insert("inputs".into(), Value::Object(inputs));
+    }
+    if s(wf, "isolation") == "worktree" {
+        d.insert("isolation".into(), json!("worktree"));
+        let wt = strip_defaults(&wf["worktree"], &crate::workflows::worktree_defaults());
+        if !wt.is_empty() {
+            d.insert("worktree".into(), Value::Object(wt));
+        }
+    }
+    if wf.get("deliver").is_some_and(Value::is_object) {
+        let mut dl = strip_defaults(&wf["deliver"], &crate::workflows::deliver_defaults());
+        if wf["deliver"]["pr"].is_object() {
+            dl.remove("push"); // implied by pr
+            let pr = strip_defaults(&wf["deliver"]["pr"], &crate::workflows::pr_defaults());
+            dl.insert("pr".into(), if pr.is_empty() { json!(true) } else { Value::Object(pr) });
+        }
+        d.insert("deliver".into(), if dl.is_empty() { json!(true) } else { Value::Object(dl) });
+    }
     if b(wf, "agents") {
         let mut agents = Map::new();
         for a in arr(wf, "agents") {
@@ -202,6 +238,13 @@ pub fn to_doc(wf: &Value) -> Value {
     }
     d.insert("steps".into(), Value::Array(steps));
     Value::Object(d)
+}
+
+/// The keys of a mapping whose values differ from the defaults.
+fn strip_defaults(v: &Value, defaults: &Value) -> Map<String, Value> {
+    v.as_object()
+        .map(|o| o.iter().filter(|(k, x)| defaults.get(k.as_str()) != Some(*x)).map(|(k, x)| (k.clone(), x.clone())).collect())
+        .unwrap_or_default()
 }
 
 /// Accepts the tidy shape (and the older JSON shape) and returns the app's workflow dict.
@@ -288,7 +331,8 @@ pub fn project_dirs() -> Vec<String> {
     let mut all: BTreeSet<String> = str_list(&read_settings(), "projects").into_iter().filter(|p| is_dir(p)).collect();
     if let Some(hint) = PROJECT_HINT.read().unwrap().as_ref() {
         for p in hint() {
-            if is_dir(&join(&p, &project_subdir())) {
+            // a run's separate copy has the project's workflows too: they aren't another project
+            if is_dir(&join(&p, &project_subdir())) && !crate::worktree::is_ours(&realpath(&p)) {
                 all.insert(realpath(&p));
             }
         }

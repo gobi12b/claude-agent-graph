@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 
 use crate::util::*;
 use crate::watcher::{file_tool, parse_ts};
-use crate::{compat, providers, wfstore, yamldoc};
+use crate::{compat, providers, quality, template, wfstore, worktree, yamldoc};
 
 pub const PERMISSION_MODES: [&str; 6] = ["acceptEdits", "auto", "dontAsk", "plan", "manual", "bypassPermissions"];
 pub const BASH_TIMEOUT: i64 = 1800; // default limit for shell steps (seconds)
@@ -106,8 +106,12 @@ pub fn find_workflow(wid: &str) -> Option<Value> {
 
 // ---- workflow files given on the command line --------------------------------------------------------
 
-const WF_KEYS: [&str; 14] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
-    "maxBudgetUsd", "judgeModel", "agents", "steps", "updated", "file"];
+const WF_KEYS: [&str; 18] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
+    "maxBudgetUsd", "judgeModel", "agents", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver"];
+const INPUT_KEYS: [&str; 5] = ["description", "type", "required", "default", "options"];
+const WORKTREE_KEYS: [&str; 4] = ["base", "keep", "setup", "copy"];
+const DELIVER_KEYS: [&str; 6] = ["branch", "commit", "message", "push", "pr", "when"];
+const PR_KEYS: [&str; 4] = ["draft", "title", "body", "base"];
 const STEP_KEYS: [&str; 16] = ["id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
     "onSuccess", "onFailure", "loopBack", "agents", "review", "judge"];
 const AGENT_KEYS: [&str; 5] = ["name", "description", "prompt", "tools", "model"];
@@ -202,6 +206,25 @@ pub fn lint(raw: &Value, wf: &Value) -> Vec<String> {
     if let Some(o) = raw.as_object() {
         unknown(o.keys().collect(), &WF_KEYS, "workflow", &mut warn);
     }
+    if let Some(o) = raw.get("inputs").and_then(Value::as_object) {
+        for (name, spec) in o {
+            if let Some(spec) = spec.as_object() {
+                unknown(spec.keys().collect(), &INPUT_KEYS, &format!("input “{name}”"), &mut warn);
+            }
+        }
+    }
+    if let Some(o) = raw.get("worktree").and_then(Value::as_object) {
+        unknown(o.keys().collect(), &WORKTREE_KEYS, "worktree", &mut warn);
+    }
+    if let Some(o) = raw.get("deliver").and_then(Value::as_object) {
+        unknown(o.keys().collect(), &DELIVER_KEYS, "deliver", &mut warn);
+        if let Some(pr) = o.get("pr").and_then(Value::as_object) {
+            unknown(pr.keys().collect(), &PR_KEYS, "deliver.pr", &mut warn);
+        }
+    }
+    if b(wf, "worktree") && s(wf, "isolation") != "worktree" && raw.get("worktree").is_some() {
+        warn.push("workflow: “worktree” settings are ignored unless isolation is worktree".into());
+    }
     for a in arr(raw, "agents") {
         if let Some(o) = a.as_object() {
             unknown(o.keys().collect(), &AGENT_KEYS, &format!("helper “{}”", o.get("name").map(py_str).unwrap_or("?".into())), &mut warn);
@@ -237,6 +260,15 @@ pub fn lint(raw: &Value, wf: &Value) -> Vec<String> {
     for st in arr(wf, "steps") {
         if let Some(m) = hole.find(&s(st, "prompt")) {
             warn.push(format!("step “{}”: still contains “{}”, a part meant to be filled in", s(st, "name"), m.as_str()));
+        }
+    }
+    let mut texts: Vec<String> = arr(wf, "steps").iter().flat_map(|st| ["prompt", "run", "check", "judge"].map(|k| s(st, k))).collect();
+    texts.push(wf["deliver"].to_string());
+    for name in wf.get("inputs").and_then(Value::as_object).map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+        let re = Regex::new(&format!(r"inputs\s*\.\s*{}\b", regex::escape(&name))).unwrap();
+        let env = format!("INPUT_{}", name.to_uppercase());
+        if !texts.iter().any(|t| re.is_match(t) || t.contains(&env)) {
+            warn.push(format!("input “{name}” is defined but nothing uses it (write {{{{ inputs.{name} }}}} in a prompt, or ${env} in a command)"));
         }
     }
     let used: HashSet<String> = arr(wf, "steps").iter().flat_map(|st| str_list(st, "agents")).collect();
@@ -531,6 +563,32 @@ pub fn validate(wf: &Value) -> Res<Value> {
             }
         }
     }
+    let inputs = template::clean_inputs(wf.get("inputs"))?;
+    let step_ids: Vec<String> = clean.iter().map(|st| s(st, "id")).collect();
+    for st in &clean {
+        for k in ["prompt", "run", "check", "judge"] {
+            template::check(&s(st, k), &inputs, &step_ids).map_err(|e| format!("Step “{}”, {k}: {e}", s(st, "name")))?;
+        }
+    }
+    let isolation = s_or(wf, "isolation", "none");
+    match isolation.as_str() {
+        "none" | "worktree" => {}
+        "container" => return err("isolation: container isn't supported yet. Use worktree."),
+        other => return Err(format!("Unknown isolation “{other}” (use none or worktree).")),
+    }
+    let worktree = clean_worktree(wf.get("worktree"))?;
+    if isolation == "worktree" && !quality::is_repo(&cwd) {
+        return Err(format!("isolation: worktree needs a git repository, and {} isn't one (run `git init` and make a first commit).", tilde(&cwd)));
+    }
+    let deliver = clean_deliver(wf.get("deliver"))?;
+    if !deliver.is_null() {
+        if isolation != "worktree" {
+            return err("deliver needs isolation: worktree, so the branch holds exactly what the run changed.");
+        }
+        for (k, t) in [("branch", s(&deliver, "branch")), ("message", s(&deliver, "message")), ("pr.title", deliver["pr"].get("title").map(py_str).unwrap_or_default()), ("pr.body", deliver["pr"].get("body").map(py_str).unwrap_or_default())] {
+            template::check(&t, &inputs, &step_ids).map_err(|e| format!("deliver.{k}: {e}"))?;
+        }
+    }
     let budget = match wf.get("maxBudgetUsd") {
         None | Some(Value::Null) => Value::Null,
         Some(Value::String(t)) if t.is_empty() => Value::Null,
@@ -548,11 +606,96 @@ pub fn validate(wf: &Value) -> Res<Value> {
         "passOutput": wf.get("passOutput").map(truthy).unwrap_or(true),
         "maxBudgetUsd": budget,
         "judgeModel": s(wf, "judgeModel").trim(),
+        "inputs": inputs,
+        "isolation": isolation,
+        "worktree": worktree,
+        "deliver": deliver,
         "agents": agents,
         "steps": clean,
         "updated": if b(wf, "updated") { wf["updated"].clone() } else { json!(now()) },
         "file": s(wf, "file"),
     }))
+}
+
+pub fn worktree_defaults() -> Value {
+    json!({"base": "HEAD", "keep": "onFailure", "setup": "", "copy": []})
+}
+
+fn clean_worktree(v: Option<&Value>) -> Res<Value> {
+    let mut out = worktree_defaults();
+    let Some(v) = v.filter(|v| truthy(v)) else { return Ok(out) };
+    if !v.is_object() {
+        return err("“worktree” should be a mapping (base, keep, setup, copy).");
+    }
+    for k in ["base", "keep", "setup"] {
+        if b(v, k) {
+            out[k] = json!(s(v, k).trim());
+        }
+    }
+    if !worktree::KEEP.contains(&s(&out, "keep").as_str()) {
+        return Err(format!("worktree keep must be {}.", worktree::KEEP.join(", ")));
+    }
+    let copy = str_items(v.get("copy"));
+    if let Some(bad) = copy.iter().find(|c| std::path::Path::new(c).is_absolute() || c.split(['/', '\\']).any(|p| p == "..")) {
+        return Err(format!("worktree copy: “{bad}” should be a path inside the project folder."));
+    }
+    out["copy"] = json!(copy);
+    Ok(out)
+}
+
+pub fn pr_defaults() -> Value {
+    json!({"draft": true, "title": "", "body": "summary", "base": ""})
+}
+
+pub fn deliver_defaults() -> Value {
+    json!({"branch": "agent-graph/{{ run.id }}", "commit": "perStep", "message": "", "push": false, "pr": false, "when": "success"})
+}
+
+/// deliver: false/absent = nothing; true = a local branch with the defaults; or a mapping.
+fn clean_deliver(v: Option<&Value>) -> Res<Value> {
+    let Some(v) = v.filter(|v| truthy(v)) else { return Ok(Value::Null) };
+    let mut out = deliver_defaults();
+    if v == &json!(true) {
+        return Ok(out);
+    }
+    if !v.is_object() {
+        return err("“deliver” should be true or a mapping (branch, commit, push, pr, when).");
+    }
+    for k in ["branch", "message"] {
+        if b(v, k) {
+            out[k] = json!(s(v, k).trim());
+        }
+    }
+    for (k, allowed) in [("commit", &["perStep", "squash"][..]), ("when", &["success", "always"][..])] {
+        if b(v, k) {
+            let x = s(v, k);
+            if !allowed.contains(&x.as_str()) {
+                return Err(format!("deliver {k} must be {}.", allowed.join(" or ")));
+            }
+            out[k] = json!(x);
+        }
+    }
+    let pr = match v.get("pr") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Value::Bool(false),
+        Some(Value::Bool(true)) => pr_defaults(),
+        Some(p) if p.is_object() => {
+            let mut pr = pr_defaults();
+            for k in ["title", "body", "base"] {
+                if b(p, k) {
+                    pr[k] = json!(s(p, k).trim());
+                }
+            }
+            if let Some(d) = p.get("draft") {
+                pr["draft"] = json!(truthy(d));
+            }
+            pr
+        }
+        Some(_) => return err("deliver pr should be true, false or a mapping (draft, title, body, base)."),
+    };
+    // a pull request needs the branch on the remote
+    out["push"] = json!(v.get("push").map(truthy).unwrap_or(false) || pr.is_object());
+    out["pr"] = pr;
+    Ok(out)
 }
 
 fn clean_loop(lb: Option<&Value>, renames: &HashMap<String, String>) -> Res<Value> {

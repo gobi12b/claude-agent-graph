@@ -50,7 +50,7 @@ fn judge_schema() -> Value {
 
 // ---- checkpoints --------------------------------------------------------------------------------
 
-fn git(cwd: &str, args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> Res<String> {
+pub fn git(cwd: &str, args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> Res<String> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0");
     for (k, v) in env {
@@ -72,12 +72,12 @@ pub fn is_repo(cwd: &str) -> bool {
     which("git").is_some() && is_dir(cwd) && git(cwd, &["rev-parse", "--is-inside-work-tree"], &[], None).is_ok_and(|o| o.trim() == "true")
 }
 
-fn toplevel(cwd: &str) -> Res<String> {
+pub fn toplevel(cwd: &str) -> Res<String> {
     Ok(git(cwd, &["rev-parse", "--show-toplevel"], &[], None)?.trim().to_string())
 }
 
 /// Run f(env) with a throwaway copy of the repo's index (copied so git can reuse its file-stat cache).
-fn with_index<T>(cwd: &str, f: impl FnOnce(&[(&str, &str)]) -> Res<T>) -> Res<T> {
+pub fn with_index<T>(cwd: &str, f: impl FnOnce(&[(&str, &str)]) -> Res<T>) -> Res<T> {
     let tmp = std::env::temp_dir().join(format!("agent-graph-index-{}", hex_id(12))).to_string_lossy().into_owned();
     let result = (|| {
         let real = join(cwd, git(cwd, &["rev-parse", "--git-path", "index"], &[], None)?.trim());
@@ -172,7 +172,7 @@ fn prune_dirs(top: &str, d: &str) {
     }
 }
 
-fn list_dir_all(d: &str) -> Vec<String> {
+pub fn list_dir_all(d: &str) -> Vec<String> {
     std::fs::read_dir(d).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
 }
 

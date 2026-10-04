@@ -129,6 +129,9 @@
     .pg { padding: 20px 16px 48px; } .ehead { flex-wrap: wrap; } .form .row2 { grid-template-columns: 1fr; }
   }
   button:focus-visible, summary:focus-visible, .block:focus-visible { outline: 2px solid var(--prompt); outline-offset: 2px; }
+  .livetoggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  #liveempty { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; color: var(--muted); font-size: 14px; }
+  #liveempty.on { display: grid; }
   #welcome { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; padding: 24px; }
   #welcome.on { display: grid; }
   #welcome .card0 { pointer-events: auto; max-width: 460px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
@@ -417,6 +420,10 @@
   .rewound { border: 1px solid color-mix(in srgb, var(--retry) 50%, var(--line)); background: color-mix(in srgb, var(--retry) 8%, var(--panel));
     border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
   .rewound .btn { margin-left: auto; }
+  .wtbox { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px;
+    font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+  .wtbox .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .wtbox .bad { color: var(--failed); }
   .runlink { cursor: pointer; } .runlink:hover .nm { color: var(--prompt); }
   .log { font-size: 12px; max-height: calc(100vh - 210px); overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
   .le { border-bottom: 1px solid var(--line); } .le summary { display: flex; gap: 8px; padding: 6px 10px; cursor: pointer; list-style: none; align-items: baseline; }
@@ -503,6 +510,7 @@
       </div>
     </details>
     <div id="conn"><i></i><span>connecting…</span></div>
+    <div id="liveempty"><div>No workflows are running right now. Turn off “Only workflows running now” to see everything.</div></div>
     <div id="welcome"><div class="card0">
       <h1>Watch and direct Claude's work</h1>
       <p>This window shows what Claude is doing on your computer as it happens. Nothing is running right now.</p>
@@ -518,6 +526,8 @@
     <section>
       <h2>Show activity from</h2>
       <div class="chips" id="windows"></div>
+      <label class="livetoggle" title="Hide your other Claude sessions and finished workflows, and show only workflows that are running or waiting for your review, with their steps and helpers">
+        <input type="checkbox" id="liveflows"> Only workflows running now</label>
     </section>
     <section id="details"><div class="empty">Click a circle or square on the left to see what it is doing.</div></section>
     <nav class="tabs" id="tabs" role="tablist">
@@ -554,6 +564,8 @@ const KIND_WORD = { session: "Claude session", agent: "Helper agent", workflow: 
 const word = (map, v) => map[v] || v || "";
 let windowSec = 86400;
 try { const s = localStorage.getItem("ag-window"); if (s !== null) windowSec = s === "Infinity" ? Infinity : +s; } catch {}
+let liveFlowsOnly = false;  // the graph shows only running workflows (and waiting ones), their steps and helpers
+try { liveFlowsOnly = localStorage.getItem("ag-liveflows") === "1"; } catch {}
 
 const canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -594,6 +606,19 @@ const rootOf = n => { let c = n, guard = 0; while (c && c.kind === "agent" && gu
 
 function visibleIds() {
   const t = now(), ids = new Set(["you"]);
+  if (liveFlowsOnly) {
+    for (const r of runs) {
+      if (r.status !== "running" && r.status !== "waiting" && !r.finishing) continue;
+      ids.add("w:" + r.id);
+      for (const a of r.attempts) ids.add("s:" + a.session);
+    }
+    for (const n of state.nodes) {  // helpers started by those steps
+      if (n.kind !== "agent") continue;
+      const r = rootOf(n);
+      if (r && ids.has(r.id)) ids.add(n.id);
+    }
+    return ids;
+  }
   const sessionOk = n => n.status !== "ended" || (windowSec > 0 && t - n.lastActive < windowSec);
   for (const n of state.nodes) {
     if (n.kind === "session" && !n.id.startsWith("n:") && sessionOk(n)) ids.add(n.id);
@@ -709,7 +734,8 @@ function renderHud() {
     `<div class="stat" title="${live} Claude session${live === 1 ? "" : "s"} open"><b>${busy}</b>working now</div>
      ${running ? `<div class="stat"><b>${running}</b>helper${running === 1 ? "" : "s"} running</div>` : ""}`;
   // first-run / quiet state: explain the app instead of showing an empty canvas
-  document.getElementById("welcome").classList.toggle("on", vis.size <= 1 && !waiting.length);
+  document.getElementById("welcome").classList.toggle("on", vis.size <= 1 && !waiting.length && !liveFlowsOnly);
+  document.getElementById("liveempty").classList.toggle("on", vis.size <= 1 && liveFlowsOnly);
   void hour;
 }
 
@@ -812,6 +838,12 @@ winEl.addEventListener("click", e => {
   markWindow(); renderHud();
 });
 markWindow();
+const liveEl = document.getElementById("liveflows");
+liveEl.checked = liveFlowsOnly;
+liveEl.addEventListener("change", () => {
+  liveFlowsOnly = liveEl.checked; try { localStorage.setItem("ag-liveflows", liveFlowsOnly ? "1" : "0"); } catch {}
+  renderHud();
+});
 
 // ---- physics ------------------------------------------------------------
 const SPRING = { spawn: 120, message: 150, handback: 120, retry: 110 };
@@ -1378,13 +1410,52 @@ document.getElementById("wfpane").addEventListener("click", async e => {
       b.closest(".more")?.removeAttribute("open");
       await api("/api/workflows/delete", { id: d.del }); return loadWorkflows();
     }
-    if (d.run) { b.disabled = true; const rid = await api("/api/runs/start", { id: d.run }); return openRun(rid); }
+    if (d.run) { b.disabled = true; try { const rid = await startRun(d.run); if (rid) openRun(rid); } finally { b.disabled = false; } return; }
     if (d.stop) { b.disabled = true; await api("/api/runs/stop", { id: d.stop }); return; }
     if (d.openrun) return openRun(d.openrun);
     if (d.history) { const r = runs.find(x => x.workflowId === d.history); return r ? openRun(r.id) : null; }
     if (d.id) return select(d.id, true);
   } catch (err) { wfMsg = err.message; renderWorkflows(); }
 });
+
+// Start a workflow. If it has inputs, ask for them first (prefilled with the last values used).
+// Resolves to the new run's id, or null if the user cancelled.
+function startRun(wid, last) {
+  const wf = workflows.find(w => w.id === wid);
+  const defs = Object.entries(wf?.inputs || {});
+  if (!defs.length) return api("/api/runs/start", { id: wid });
+  let prev = {};
+  try { prev = JSON.parse(localStorage.getItem("ag-inputs:" + wid) || "{}"); } catch {}
+  const val = (k, d) => last?.[k] ?? prev[k] ?? d.default ?? "";
+  const field = ([k, d]) => {
+    const label = `${esc(d.description || k)}${d.required ? "" : ` <span class="hint">optional</span>`}`, v = val(k, d);
+    if (d.type === "boolean") return `<label class="f" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-in="${esc(k)}" ${v === true || v === "true" ? "checked" : ""}> ${label}</label>`;
+    if (d.type === "choice") return `<label class="f">${label}<select data-in="${esc(k)}">${d.options.map(o => `<option ${String(v) === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`;
+    if (d.type === "text") return `<label class="f">${label}<textarea data-in="${esc(k)}" rows="4">${esc(String(v))}</textarea></label>`;
+    return `<label class="f">${label}<input data-in="${esc(k)}" ${d.type === "number" ? `type="number" step="any"` : ""} value="${esc(String(v))}" autocomplete="off"></label>`;
+  };
+  return new Promise(resolve => {
+    let done = false;
+    const finish = id => { if (!done) { done = true; resolve(id); } };
+    openModal(`Run “${wf.name}”`, `<div class="form" id="inform"><div class="hint">This workflow needs a few details before it starts.</div>${defs.map(field).join("")}</div>`,
+      `<span class="msg"></span><button class="btn" id="incancel">Cancel</button><button class="btn pri" id="ingo">▶ Run</button>`);
+    const close = closeModal;
+    closeModal = function () { closeModal = close; close(); finish(null); };
+    document.getElementById("incancel").onclick = () => closeModal();
+    document.querySelector("#inform [data-in]")?.focus();
+    document.getElementById("ingo").onclick = async () => {
+      const inputs = {};
+      for (const el of document.querySelectorAll("#inform [data-in]")) inputs[el.dataset.in] = el.type === "checkbox" ? el.checked : el.value;
+      const missing = defs.filter(([k, d]) => d.required && d.type !== "boolean" && !String(inputs[k]).trim()).map(([k, d]) => d.description || k);
+      if (missing.length) return setMsg("Fill in: " + missing.join(", "));
+      try {
+        const id = await api("/api/runs/start", { id: wid, inputs });
+        try { localStorage.setItem("ag-inputs:" + wid, JSON.stringify(inputs)); } catch {}
+        finish(id); closeModal();
+      } catch (e) { setMsg(e.message); }
+    };
+  });
+}
 
 // ---- modal --------------------------------------------------------------
 const modal = document.getElementById("modal");
@@ -1940,7 +2011,7 @@ async function saveDraft(run) {
   try {
     const saved = await api("/api/workflows/save", draft);
     closeBuilder(); await loadWorkflows();
-    if (run) { go("workflows"); return openRun(await api("/api/runs/start", { id: saved.id })); }
+    if (run) { go("workflows"); const rid = await startRun(saved.id); return rid && openRun(rid); }
     go("workflows");
   } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
 }
@@ -2166,7 +2237,7 @@ function renderRunSide() {
   const keep = logEl ? logEl.scrollTop : 0, open = logEl ? [...logEl.querySelectorAll("details[open]")].map(x => x.dataset.k) : [];
   const fb = document.getElementById("rvfeedback");
   if (fb) rv.draftFeedback = fb.value;
-  el.innerHTML = `${rewoundHtml(r)}${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}${steerBox(p, atts, r)}
+  el.innerHTML = `${rewoundHtml(r)}${worktreeHtml(r)}${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}${steerBox(p, atts, r)}
     <nav class="tabs rvtabs">${tab("input", "Instructions", (att.reads || []).length)}${tab("log", att.status === "running" ? "● Live activity" : "Activity")}${tab("files", "Files", files.size)}${tab("changes", "Changes")}${tab("output", att.judge?.status === "fail" ? "Result ⚖✗" : att.judge?.status === "pass" ? "Result ⚖✓" : "Result")}${tab("errors", "Problems", errs.length)}</nav>
     <div class="rvtab">${body}</div>`;
   const nl = document.getElementById("rvlog");
@@ -2237,6 +2308,29 @@ function rewoundHtml(r) {
   if (!r.rewound) return "";
   return `<div class="rewound">⏪ The folder was rewound to before “${esc(r.rewound.name)}”.
     <button class="btn sm" data-unrewind title="Put back the files exactly as they were before the rewind">↶ Undo rewind</button></div>`;
+}
+
+// The run's inputs, its separate copy (worktree) and what became of its changes: applied, branch, pull request.
+function worktreeHtml(r) {
+  let h = "";
+  const inputs = Object.entries(r.inputs || {});
+  if (inputs.length) h += `<div class="wtbox"><b>Inputs</b>${inputs.map(([k, v]) =>
+    `<div class="hint"><b>${esc(k)}</b>: ${esc(String(v).slice(0, 300))}</div>`).join("")}</div>`;
+  const wt = r.worktree;
+  if (!wt) return h;
+  const d = r.delivery || {}, busy = r.status === "running" || r.status === "waiting" || r.finishing;
+  const lines = [`🌿 This run works in a separate copy of the project, so your own folder isn't touched${wt.removed ? ". The copy has been removed, but its changes are kept here." : "."}`];
+  if (r.applied) lines.push("✓ Its changes were applied to your folder.");
+  if (d.branch) lines.push(`⎇ Branch <b>${esc(d.branch)}</b> (${d.commits} commit${d.commits === 1 ? "" : "s"})${d.pushed ? ", pushed" : ""}${d.pr ? ` · <a href="${esc(d.pr)}" target="_blank" rel="noopener">pull request</a>` : ""}`);
+  if (d.error) lines.push(`<span class="bad">Couldn't make the branch: ${esc(d.error)}</span>`);
+  if (r.finishing) lines.push(`<span class="hint">Finishing up…</span>`);
+  const btns = busy ? "" : [
+    r.applied ? `<button class="btn sm" data-wt="unapply" title="Put your folder back as it was before applying">↶ Undo apply</button>`
+      : `<button class="btn sm pri" data-wt="apply" title="Copy this run's changes into your project folder">Apply to my folder</button>`,
+    `<button class="btn sm" data-wt="branch" title="Save this run's changes as a git branch, one commit per step">${d.branch ? "Update branch" : "Create branch"}</button>`,
+    d.pr ? "" : `<button class="btn sm" data-wt="pr" title="Push the branch and open a pull request (needs the GitHub CLI, gh)">Open pull request</button>`,
+    wt.removed ? "" : `<button class="btn sm" data-wt="discard" title="Delete the separate copy. Its changes stay available here.">Discard copy</button>`].join("");
+  return h + `<div class="wtbox">${lines.map(l => `<div>${l}</div>`).join("")}${btns ? `<div class="row">${btns}</div>` : ""}</div>`;
 }
 
 function fileRow(f, icon, info) {
@@ -2821,6 +2915,17 @@ document.getElementById("rvside").addEventListener("click", async e => {
       changesCache.clear(); document.getElementById("rvmsg").textContent = "⏪ Rewound. Undo it from the banner above if you change your mind.";
       return refreshRun(true);
     }
+    if (d.wt) {
+      if (d.wt === "discard" && !b.classList.contains("confirm")) { b.classList.add("confirm", "danger"); b.textContent = "Confirm discard"; return; }
+      b.disabled = true;
+      const url = { apply: "/api/runs/apply", unapply: "/api/runs/unapply", discard: "/api/runs/discard", branch: "/api/runs/deliver", pr: "/api/runs/deliver" }[d.wt];
+      try { await api(url, { id: rv.id, pr: d.wt === "pr" }); }
+      finally { refreshRun(true); }
+      changesCache.clear();
+      document.getElementById("rvmsg").textContent = { apply: "✓ Applied to your folder.", unapply: "↶ Your folder is back as it was.",
+        discard: "The separate copy was removed.", branch: "⎇ Branch ready.", pr: "Pull request opened." }[d.wt];
+      return;
+    }
     if ("unrewind" in d) { b.disabled = true; await api("/api/runs/unrewind", { id: rv.id }); changesCache.clear(); return refreshRun(true); }
     if (d.steer) return sendSteer(d.steer, b);
     if (d.replay) return showPop(d.replay);
@@ -2859,7 +2964,7 @@ document.getElementById("rvstop").addEventListener("click", async e => {
   try { await api("/api/runs/stop", { id: rv.id }); refreshRun(true); } catch (e) { document.getElementById("rvmsg").textContent = e.message; }
 });
 document.getElementById("rvagain").addEventListener("click", async () => {
-  try { const id = await api("/api/runs/start", { id: rv.run.workflowId }); rv = null; openRun(id); }
+  try { const id = await startRun(rv.run.workflowId, rv.run.inputs); if (id) { rv = null; openRun(id); } }
   catch (e) { document.getElementById("rvmsg").textContent = e.message; }
 });
 document.getElementById("rveditwf").addEventListener("click", () => {

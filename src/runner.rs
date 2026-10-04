@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 use crate::util::*;
 use crate::watcher::Graph;
 use crate::workflows::{self, descendants, find_workflow, read_file, topo_order, validate, BASH_TIMEOUT};
-use crate::{compat, providers, quality};
+use crate::{compat, providers, quality, template, worktree};
 
 const MAX_HOPS: usize = 50; // guards against workflows whose directions loop forever
 const CHECK_TIMEOUT: u64 = 600;
@@ -178,16 +178,18 @@ impl Runner {
     }
 
     /// wf: an already-validated workflow (e.g. from a file given on the command line).
-    pub fn start(self: &Arc<Self>, wid: &str, wf: Option<Value>) -> Res<String> {
+    /// inputs: values for the workflow's inputs ({name: value}); the defaults fill in the rest.
+    pub fn start(self: &Arc<Self>, wid: &str, wf: Option<Value>, inputs: &Value) -> Res<String> {
         let wf = match wf {
             Some(w) => w,
             None => find_workflow(wid).ok_or("Workflow not found.")?,
         };
         let wf = validate(&wf)?;
+        let values = template::resolve_inputs(wf["inputs"].as_object().unwrap_or(&Map::new()), inputs)?;
         let rid = format!("{}{}", local_time("%Y%m%d-%H%M%S-"), hex_id(4));
         let run = json!({"id": rid, "workflowId": wf["id"], "name": wf["name"], "status": "running", "started": now(),
-            "ended": null, "current": null, "cost": 0.0, "attempts": [], "stop": false, "cwd": wf["cwd"],
-            "plan": plan(&wf), "pid": std::process::id(), "file": s(&wf, "file")});
+            "ended": null, "current": null, "cost": 0.0, "attempts": [], "stop": false, "cwd": wf["cwd"], "project": wf["cwd"],
+            "inputs": values, "isolation": wf["isolation"], "plan": plan(&wf), "pid": std::process::id(), "file": s(&wf, "file")});
         {
             let mut st = self.lock();
             st.runs.insert(rid.clone(), run.clone());
@@ -201,9 +203,44 @@ impl Runner {
         }
         let me = self.clone();
         let id = rid.clone();
-        std::thread::spawn(move || me.run_all(Arc::new(wf), &id, None, HashMap::new()));
+        std::thread::spawn(move || {
+            if let Some(wf) = me.prepare(wf, &id) {
+                me.run_all(Arc::new(wf), &id, None, HashMap::new());
+            }
+        });
         self.changed(&rid);
         Ok(rid)
+    }
+
+    /// Make the run's separate worktree when the workflow asks for one; steps then run there.
+    /// Returns the workflow to run (its cwd moved into the worktree), or None if that failed.
+    fn prepare(&self, mut wf: Value, rid: &str) -> Option<Value> {
+        if s(&wf, "isolation") != "worktree" {
+            return Some(wf);
+        }
+        self.with_run(rid, |r| r["current"] = json!("Making a separate copy of the project"));
+        self.changed(rid);
+        match worktree::create(&s(&wf, "cwd"), rid, &wf["worktree"]) {
+            Ok(rec) => {
+                wf["cwd"] = rec["folder"].clone();
+                self.with_run(rid, |r| {
+                    r["cwd"] = rec["folder"].clone();
+                    r["worktree"] = rec;
+                    r["current"] = Value::Null;
+                });
+                self.changed(rid);
+                Some(wf)
+            }
+            Err(e) => {
+                self.with_run(rid, |r| {
+                    for (k, v) in [("status", json!("failed")), ("error", json!(e)), ("ended", json!(now())), ("current", Value::Null)] {
+                        r[k] = v;
+                    }
+                });
+                self.changed(rid);
+                None
+            }
+        }
     }
 
     /// Run one step again (or from it to the end) inside the same run, with the current saved workflow.
@@ -217,9 +254,14 @@ impl Runner {
         let mut wf = find_workflow(&s(&run, "workflowId"));
         if wf.is_none() && is_file(&s(&run, "file")) {
             // a workflow file run from the command line
-            wf = Some(read_file(&s(&run, "file"), Some(&s(&run, "cwd")).filter(|c| !c.is_empty()).map(String::as_str))?.0);
+            wf = Some(read_file(&s(&run, "file"), Some(&project_of(&run)).filter(|c| !c.is_empty()).map(String::as_str))?.0);
         }
-        let wf = validate(&wf.ok_or("The workflow was deleted, so its steps can't be replayed.")?)?;
+        let mut wf = validate(&wf.ok_or("The workflow was deleted, so its steps can't be replayed.")?)?;
+        if run.get("worktree").is_some_and(Value::is_object) {
+            // replay in the run's own worktree (brought back if it was removed)
+            self.ensure_worktree(rid)?;
+            wf["cwd"] = run["worktree"]["folder"].clone();
+        }
         let steps = arr(&wf, "steps");
         let Some(step) = steps.iter().find(|st| st["id"] == step_id) else {
             return err("This step is no longer in the workflow.");
@@ -696,13 +738,21 @@ impl Runner {
                 r["status"] = json!(fin);
                 r["ended"] = json!(now());
                 r["current"] = Value::Null;
+                if r.get("worktree").is_some_and(Value::is_object) {
+                    r["finishing"] = json!(true); // delivery and tidying up follow (after_run)
+                }
             }
         }
         self.changed(rid);
+        self.after_run(&wf, rid);
     }
 
     fn worker(self: &Arc<Self>, wf: &Value, rid: &str, sid: &str, inputs: Vec<(String, StepResult)>, extra: &str, loop_n: i64) -> StepResult {
         let step = arr(wf, "steps").iter().find(|st| st["id"] == sid).cloned().unwrap_or_default();
+        let step = match self.render_step(rid, &step) {
+            Ok(st) => st,
+            Err(e) => return StepResult { reason: format!("couldn't fill in its template: {e}"), ..Default::default() },
+        };
         let (prev_out, label) = if inputs.len() == 1 {
             (inputs[0].1.out.clone(), "")
         } else {
@@ -1194,7 +1244,8 @@ impl Runner {
                 .env("WORKFLOW_NAME", s(wf, "name"))
                 .env("WORKFLOW_RUN", rid)
                 .env("STEP_ID", s(step, "id"))
-                .env("STEP_ATTEMPT", attempt.to_string());
+                .env("STEP_ATTEMPT", attempt.to_string())
+                .envs(input_env(&self.get_run(rid).unwrap_or_default()));
             compat::detached(&mut cmd);
             let mut child = cmd.spawn()?;
             let proc = self.register(rid, None, child.id());
@@ -1292,7 +1343,7 @@ impl Runner {
         if !b(&att, "after") {
             return Ok(json!({"available": false, "reason": "This step is still working. Its changes show when it finishes."}));
         }
-        match quality::diff(&s(&run, "cwd"), &s(&att, "before"), &s(&att, "after")) {
+        match quality::diff(&repo_of(&run), &s(&att, "before"), &s(&att, "after")) {
             Ok(mut d) => {
                 d["available"] = json!(true);
                 d["rewound"] = json!(run.get("rewound").map(|r| s(r, "session")) == Some(session.to_string()));
@@ -1311,6 +1362,9 @@ impl Runner {
         if !b(&att, "before") {
             return err("This step has no checkpoint to go back to.");
         }
+        if run.get("worktree").is_some_and(Value::is_object) {
+            self.ensure_worktree(rid)?;
+        }
         let undo = quality::restore(&s(&run, "cwd"), &s(&att, "before")).map_err(|e| format!("Couldn't rewind: {e}"))?;
         let rewound = json!({"session": session, "name": att["name"], "undo": undo, "t": now()});
         self.with_run(rid, |r| r["rewound"] = rewound.clone());
@@ -1323,10 +1377,230 @@ impl Runner {
         if ["running", "waiting"].contains(&s(&run, "status").as_str()) {
             return err("Stop the run before undoing the rewind.");
         }
+        if run.get("worktree").is_some_and(Value::is_object) {
+            self.ensure_worktree(rid)?;
+        }
         quality::restore(&s(&run, "cwd"), &s(&run["rewound"], "undo")).map_err(|e| format!("Couldn't undo the rewind: {e}"))?;
         self.with_run(rid, |r| r.as_object_mut().map(|o| o.shift_remove("rewound")));
         self.changed(rid);
         Ok(Value::Null)
+    }
+
+    // -- inputs, worktrees and delivery --
+
+    /// What templates can use: the run's inputs, its steps' latest results and facts about the run.
+    fn ctx(&self, rid: &str) -> Value {
+        let run = self.get_run(rid).unwrap_or_default();
+        let mut steps = Map::new();
+        for a in arr(&run, "attempts").iter().filter(|a| s(a, "status") == "ok") {
+            steps.insert(s(a, "step"), json!({"output": a["output"]}));
+        }
+        json!({"inputs": run.get("inputs").cloned().unwrap_or(json!({})), "steps": steps,
+               "run": {"id": rid, "folder": run["cwd"], "project": project_of(&run), "workflow": run["name"]}})
+    }
+
+    /// The step with its templates filled in (commands and checks with each value shell-quoted).
+    fn render_step(&self, rid: &str, step: &Value) -> Res<Value> {
+        let fields = [("prompt", false), ("judge", false), ("run", true), ("check", true)];
+        if !fields.iter().any(|(k, _)| template::has_template(&s(step, k))) {
+            return Ok(step.clone());
+        }
+        let ctx = self.ctx(rid);
+        let mut out = step.clone();
+        for (k, shell) in fields {
+            if step.get(k).is_some() {
+                out[k] = json!(template::render(&s(step, k), &ctx, shell)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The run's files as they are now (or as it left them, if its worktree is gone).
+    fn final_tree(&self, rid: &str) -> Option<String> {
+        let run = self.get_run(rid)?;
+        let wt = run.get("worktree").filter(|w| w.is_object())?;
+        if is_dir(&s(wt, "folder")) {
+            if let Some(t) = quality::snapshot(&s(wt, "folder")) {
+                return Some(t);
+            }
+        }
+        if b(wt, "finalTree") {
+            return Some(s(wt, "finalTree"));
+        }
+        arr(&run, "attempts").iter().rev().find(|a| b(a, "after")).map(|a| s(a, "after")).or_else(|| Some(s(wt, "baseTree")))
+    }
+
+    /// Bring back a run's removed worktree with the files it left.
+    fn ensure_worktree(&self, rid: &str) -> Res<()> {
+        let run = self.get_run(rid).ok_or("Run not found.")?;
+        let wt = run.get("worktree").filter(|w| w.is_object()).ok_or("This run didn't use a separate copy.")?;
+        if is_dir(&s(wt, "folder")) {
+            return Ok(());
+        }
+        let tree = self.final_tree(rid).ok_or("This run has no saved files to bring back.")?;
+        worktree::recreate(&project_of(&run), wt, &tree)?;
+        self.with_run(rid, |r| {
+            r["worktree"].as_object_mut().map(|o| o.shift_remove("removed"));
+            r["cwd"] = r["worktree"]["folder"].clone();
+        });
+        Ok(())
+    }
+
+    /// When a run ends: remember its final files, deliver them if the workflow says so, and tidy up its worktree.
+    fn after_run(&self, wf: &Value, rid: &str) {
+        let Some(run) = self.get_run(rid) else { return };
+        let Some(wt) = run.get("worktree").filter(|w| w.is_object()).cloned() else { return };
+        if let Some(t) = self.final_tree(rid) {
+            self.with_run(rid, |r| r["worktree"]["finalTree"] = json!(t));
+        }
+        let status = s(&run, "status");
+        let dl = &wf["deliver"];
+        if dl.is_object() && (status == "succeeded" || (s(dl, "when") == "always" && status == "failed")) {
+            self.with_run(rid, |r| r["current"] = json!("Making the branch"));
+            self.changed(rid);
+            if let Err(e) = self.deliver(rid, dl) {
+                self.with_run(rid, |r| r["delivery"] = json!({"error": e, "t": now()}));
+            }
+            self.with_run(rid, |r| r["current"] = Value::Null);
+        }
+        let keep = s(&wt, "keep");
+        if (keep == "never" || (keep == "onFailure" && status == "succeeded")) && worktree::remove(&project_of(&run), &wt).is_ok() {
+            self.with_run(rid, |r| r["worktree"]["removed"] = json!(true));
+        }
+        self.with_run(rid, |r| r.as_object_mut().map(|o| o.shift_remove("finishing")));
+        self.changed(rid);
+    }
+
+    /// Turn the run's changes into a branch (one commit per step, or one in all), and optionally push it
+    /// and open a pull request. Delivering again (after a replay) moves the same branch and keeps its PR.
+    fn deliver(&self, rid: &str, dl: &Value) -> Res<Value> {
+        let run = self.get_run(rid).ok_or("Run not found.")?;
+        let wt = run.get("worktree").filter(|w| w.is_object()).ok_or("Only runs in a separate copy (isolation: worktree) can be delivered as a branch.")?;
+        let project = project_of(&run);
+        let tree = self.final_tree(rid).ok_or("Couldn't read the run's files.")?;
+        let ctx = self.ctx(rid);
+        let pr = dl["pr"].clone();
+        let title = [s(&pr, "title"), s(dl, "message")]
+            .iter()
+            .find(|t| !t.trim().is_empty())
+            .map(|t| template::render(t, &ctx, false))
+            .transpose()?
+            .unwrap_or_else(|| s(&run, "name"));
+        let title = first_line(title.trim());
+        let footer = format!("\n\nMade by Claude Agent Graph, workflow “{}”, run {rid}.", s(&run, "name"));
+        let mut trees: Vec<(String, String)> = vec![];
+        if s(dl, "commit") != "squash" {
+            let mut done: Vec<&Value> = arr(&run, "attempts").iter().filter(|a| s(a, "status") == "ok" && b(a, "after")).collect();
+            done.sort_by(|x, y| f(x, "ended").total_cmp(&f(y, "ended")));
+            trees.extend(done.iter().map(|a| (s(a, "after"), format!("{}{footer}", s(a, "name")))));
+            trees.push((tree.clone(), format!("Final changes{footer}"))); // anything after the last step (e.g. a rewind)
+        } else {
+            trees.push((tree.clone(), format!("{title}{footer}")));
+        }
+        let commits = worktree::commit_chain(&project, wt, &trees)?;
+        let Some(head) = commits.last() else {
+            return err("The run didn't change any files, so there's no branch to make.");
+        };
+        let old = run.get("delivery").filter(|d| b(d, "branch")).cloned();
+        let branch = match &old {
+            Some(d) => worktree::branch_name(&project, &s(d, "branch"), true)?,
+            None => worktree::branch_name(&project, &template::render(&s(dl, "branch"), &ctx, false)?, false)?,
+        };
+        worktree::set_branch(&project, &branch, head)?;
+        let mut rec = json!({"branch": branch, "commit": head, "commits": commits.len(), "pushed": false, "pr": old.as_ref().map(|d| d["pr"].clone()).unwrap_or(Value::Null), "t": now(), "error": ""});
+        self.with_run(rid, |r| r["delivery"] = rec.clone());
+        if b(dl, "push") {
+            worktree::push(&project, &branch, old.is_some_and(|d| b(&d, "pushed")))?;
+            rec["pushed"] = json!(true);
+            self.with_run(rid, |r| r["delivery"] = rec.clone());
+        }
+        if pr.is_object() && !b(&rec, "pr") {
+            let body = if s(&pr, "body") == "summary" || s(&pr, "body").is_empty() { summary(&self.get_run(rid).unwrap_or_default()) } else { template::render(&s(&pr, "body"), &ctx, false)? };
+            rec["pr"] = json!(worktree::open_pr(&project, &branch, &title, &body, b(&pr, "draft"), &s(&pr, "base"))?);
+            self.with_run(rid, |r| r["delivery"] = rec.clone());
+        }
+        Ok(rec)
+    }
+
+    fn finished_run(&self, rid: &str) -> Res<Value> {
+        let run = self.get_run(rid).ok_or("Run not found.")?;
+        Self::external(&run, "Wait for it to finish.")?;
+        if ["running", "waiting"].contains(&s(&run, "status").as_str()) {
+            return err("Wait for the run to finish (or stop it) first.");
+        }
+        if !run.get("worktree").is_some_and(Value::is_object) {
+            return err("This run worked in your folder directly, not in a separate copy.");
+        }
+        Ok(run)
+    }
+
+    /// "Create branch" / "Open pull request" from the app, for any finished run in a separate copy.
+    pub fn deliver_now(&self, rid: &str, pr: bool) -> Res<Value> {
+        let run = self.finished_run(rid)?;
+        let wf = find_workflow(&s(&run, "workflowId"));
+        let mut dl = wf.map(|w| w["deliver"].clone()).filter(Value::is_object).unwrap_or_else(workflows::deliver_defaults);
+        if pr && !dl["pr"].is_object() {
+            dl["pr"] = workflows::pr_defaults();
+        }
+        if pr {
+            dl["push"] = json!(true);
+        }
+        let res = self.deliver(rid, &dl);
+        if let Err(e) = &res {
+            self.with_run(rid, |r| {
+                if !r.get("delivery").is_some_and(Value::is_object) {
+                    r["delivery"] = json!({});
+                }
+                r["delivery"]["error"] = json!(e);
+            });
+        }
+        self.changed(rid);
+        res
+    }
+
+    /// Copy the run's changes into the user's own folder (undoable).
+    pub fn apply(&self, rid: &str) -> Res<Value> {
+        let run = self.finished_run(rid)?;
+        if b(&run, "applied") {
+            return err("This run's changes are already in your folder.");
+        }
+        let tree = self.final_tree(rid).ok_or("Couldn't read the run's files.")?;
+        let undo = worktree::apply(&project_of(&run), &s(&run["worktree"], "baseTree"), &tree)?;
+        let rec = json!({"undo": undo, "t": now()});
+        self.with_run(rid, |r| r["applied"] = rec.clone());
+        self.changed(rid);
+        Ok(rec)
+    }
+
+    pub fn unapply(&self, rid: &str) -> Res<Value> {
+        let run = self.finished_run(rid)?;
+        let undo = run.get("applied").map(|a| s(a, "undo")).filter(|u| !u.is_empty()).ok_or("There's nothing to undo.")?;
+        quality::restore(&project_of(&run), &undo).map_err(|e| format!("Couldn't undo: {e}"))?;
+        self.with_run(rid, |r| r.as_object_mut().map(|o| o.shift_remove("applied")));
+        self.changed(rid);
+        Ok(Value::Null)
+    }
+
+    /// Remove the run's worktree. Its changes stay available (apply, branch) until git cleans up old objects.
+    pub fn discard(&self, rid: &str) -> Res<Value> {
+        let run = self.finished_run(rid)?;
+        if let Some(t) = self.final_tree(rid) {
+            self.with_run(rid, |r| r["worktree"]["finalTree"] = json!(t));
+        }
+        worktree::remove(&project_of(&run), &run["worktree"])?;
+        self.with_run(rid, |r| r["worktree"]["removed"] = json!(true));
+        self.changed(rid);
+        Ok(Value::Null)
+    }
+
+    /// Remove the worktrees of every finished run. Returns how many were removed.
+    pub fn clean(&self) -> usize {
+        let ids: Vec<String> = self.lock().runs.values()
+            .filter(|r| r.get("worktree").is_some_and(|w| w.is_object() && !b(w, "removed") && is_dir(&s(w, "path"))))
+            .filter(|r| !["running", "waiting"].contains(&s(r, "status").as_str()))
+            .map(|r| s(r, "id"))
+            .collect();
+        ids.iter().filter(|rid| self.discard(rid).is_ok()).count()
     }
 
     fn check(&self, wf: &Value, step: &Value) -> (bool, String) {
@@ -1340,6 +1614,47 @@ impl Runner {
             Err(e) => (false, format!("couldn't run the check: {e}")),
         }
     }
+}
+
+/// The user's own project folder (a run in a worktree works elsewhere).
+fn project_of(run: &Value) -> String {
+    if b(run, "project") { s(run, "project") } else { s(run, "cwd") }
+}
+
+/// A folder inside the run's repository that still exists, for reading its checkpoints.
+fn repo_of(run: &Value) -> String {
+    let cwd = s(run, "cwd");
+    if is_dir(&cwd) { cwd } else { project_of(run) }
+}
+
+/// Run inputs as environment variables for shell steps: INPUT_BUG, INPUT_SEVERITY…
+fn input_env(run: &Value) -> Vec<(String, String)> {
+    run.get("inputs").and_then(Value::as_object).map(|o| o.iter().map(|(k, v)| (format!("INPUT_{}", k.to_uppercase()), template::as_text(v))).collect()).unwrap_or_default()
+}
+
+/// The pull request description: inputs, each step's result and judge verdict, and the cost.
+fn summary(run: &Value) -> String {
+    let mut out = format!("Made by Claude Agent Graph: workflow **{}**, run `{}`.\n", s(run, "name"), s(run, "id"));
+    if let Some(inputs) = run.get("inputs").and_then(Value::as_object).filter(|o| !o.is_empty()) {
+        out += "\n**Inputs**\n";
+        for (k, v) in inputs {
+            out += &format!("- {k}: {}\n", first_chars(&template::as_text(v).replace('\n', " "), 300));
+        }
+    }
+    out += "\n| Step | Result | AI judge | Cost |\n|---|---|---|---|\n";
+    let mut last: Vec<&Value> = vec![];
+    for a in arr(run, "attempts") {
+        last.retain(|x| x["step"] != a["step"]);
+        last.push(a);
+    }
+    for a in last {
+        let j = a.get("judge").cloned().unwrap_or(json!({}));
+        let judge = if b(&j, "score") { format!("{}/100", py_str(&j["score"])) } else { "–".into() };
+        let result = match s(a, "status").as_str() { "ok" => "✅ done", "failed" => "❌ failed", other => other }.to_string();
+        out += &format!("| {} | {result} | {judge} | ${:.2} |\n", s(a, "name").replace('|', "/"), f(a, "cost"));
+    }
+    out += &format!("\nTotal cost: ${:.2}\n", f(run, "cost"));
+    out
 }
 
 fn plan(wf: &Value) -> Value {

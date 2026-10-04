@@ -213,6 +213,30 @@ If the window can't open (for example over SSH), the app falls back to the brows
 - **Unicode** works on Windows without any special mode, because Rust strings are always UTF-8.
 - **Tests:** `cargo test`. **Cross-check another OS:** `rustup target add x86_64-pc-windows-gnu && cargo check --target x86_64-pc-windows-gnu`.
 
+### Rust version only: run inputs, separate copies and branches
+
+These three workflow settings are in the Rust version only for now. The Python version warns that it doesn't know them and ignores them.
+
+```yaml
+name: Fix a bug
+inputs:
+  bug: What's going wrong?                 # shorthand: a required text input
+  severity: {type: choice, options: [low, high], default: low}
+isolation: worktree                        # run in a separate git worktree
+worktree: {copy: [.env], setup: npm ci, keep: onFailure}
+deliver:                                   # the run's changes as a branch, one commit per step
+  branch: "fix/{{ inputs.bug | slug }}"
+  pr: {draft: true}                        # push it and open a pull request (needs gh)
+steps:
+  - name: Fix it
+    prompt: "Fix this bug: {{ inputs.bug }} (severity {{ inputs.severity }})"
+    check: npm test
+```
+
+- **Inputs.** **▶ Run** asks for them in a form (filled in with the last values you used). In the terminal, pass `--input bug="Login fails on Safari"` (repeat it for more inputs) or `--inputs values.json`. If a required input is missing, the terminal asks for it, or exits with code `1` when there's no one to ask. Templates can use `{{ inputs.<name> }}`, `{{ steps.<id>.output }}`, `{{ run.id }}`, `{{ run.folder }}` and `{{ run.project }}`, with the filters `default("…")`, `slug`, `trim` and `json`. In `run:` commands and `check:`s each value is quoted for the shell, and shell steps also get each input as `$INPUT_<NAME>`.
+- **Separate copy (`isolation: worktree`).** The run works in its own git worktree in `~/.config/claude-agent-graph/worktrees/`, starting from `base` (default `HEAD`). Your folder and other runs aren't touched, and each step's diff is exactly its own. Uncommitted changes in your folder aren't included; list files the run needs, such as `.env`, under `copy`. `keep` says when to delete the copy: `always` keeps it, `onFailure` (the default) keeps it only when the run fails, `never` always deletes it. Its changes stay available after it's deleted. In the run view you can **Apply to my folder** (undoable; nothing is applied unless all of it applies cleanly), **Create branch**, **Open pull request** or **Discard copy**. `agent-graph run … --isolation worktree` turns it on for one run, and `agent-graph clean` removes the copies of finished runs.
+- **Branches (`deliver`).** Builds commits from the step checkpoints on top of the base commit, without touching your checkout. The commits hold only the run's changes: files copied in, or made by `setup`, never get committed. `commit: squash` makes a single commit. `when: always` also delivers failed runs. `push: true` pushes the branch, and `pr` pushes it and opens a pull request whose description lists each step, its AI judge score and the cost. Replaying steps and delivering again moves the same branch and keeps its pull request. If you have no git identity set, commits are made as "Claude Agent Graph".
+
 ## Run
 
 ```sh

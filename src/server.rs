@@ -167,7 +167,11 @@ impl App {
             "/api/steps/delete" => wfstore::delete_user_step(&req_str(b, "key")?, false),
             "/api/ides/set" => workflows::set_ide(b.get("ide").unwrap_or(&Value::Null)),
             "/api/runs/ide" => r.open_ide(&id()?, opt("path").as_deref()),
-            "/api/runs/start" => r.start(&id()?, None).map(Value::from),
+            "/api/runs/start" => r.start(&id()?, None, b.get("inputs").unwrap_or(&Value::Null)).map(Value::from),
+            "/api/runs/apply" => r.apply(&id()?),
+            "/api/runs/unapply" => r.unapply(&id()?),
+            "/api/runs/discard" => r.discard(&id()?),
+            "/api/runs/deliver" => r.deliver_now(&id()?, opt_truthy(b.get("pr"))),
             "/api/runs/stop" => r.stop(&id()?),
             "/api/runs/replay" => r.replay(&id()?, &req_str(b, "step")?, opt_truthy(b.get("only")), None),
             "/api/folders/check" => check_folder(b),
@@ -256,7 +260,8 @@ impl App {
     }
 }
 
-const API_POST: [&str; 30] = [
+const API_POST: [&str; 34] = [
+    "/api/runs/apply", "/api/runs/unapply", "/api/runs/discard", "/api/runs/deliver",
     "/kill", "/api/permissions", "/api/workflows/save", "/api/workflows/delete", "/api/workflows/open", "/api/agents/save",
     "/api/agents/delete", "/api/steps/save", "/api/steps/delete", "/api/ides/set", "/api/runs/ide", "/api/runs/start",
     "/api/runs/stop", "/api/runs/replay", "/api/folders/check", "/api/models/extra", "/api/folders/pick", "/api/runs/steer",
