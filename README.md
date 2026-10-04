@@ -2,7 +2,16 @@
 
 <h1 align="center">Claude Agent Graph</h1>
 
-A live, visual map of everything [Claude Code](https://claude.com/claude-code) is doing on your machine: your sessions, the helper agents (subagents) they start, and the messages between them. It also includes a drag-and-drop **workflow builder** that chains Claude steps and shell steps, with retries, checks, review pauses and loop-backs.
+Build **workflows** for [Claude Code](https://claude.com/claude-code) and run them reliably. Chain Claude steps and shell commands, then let each step check its own work:
+
+- **Tests:** a `check:` command must pass.
+- **AI judge:** an independent model grades the step's real changes against acceptance criteria you write in plain words.
+- **Retries:** a failed step is redone with the judge's feedback, so retries fix what was wrong instead of trying the same thing again.
+- **Reviews:** the run pauses for you wherever you want to look first.
+
+Every step is checkpointed, so you can see exactly what it changed and rewind it. You can run a workflow in a separate copy of your project, hand the result back as a branch or pull request, and run any workflow from the terminal or CI. You design workflows in a drag-and-drop builder or as plain YAML kept with your code.
+
+A **live map** shows what Claude Code is doing while it works: every session, the helper agents it starts, and how they hand work to each other.
 
 One small program for **macOS, Linux and Windows**: nothing else to install besides Claude Code.
 
@@ -14,31 +23,39 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 
 | | |
 |---|---|
-| ![Home](docs/screenshots/home.png) | ![Live map](docs/screenshots/live-map.png) |
-| **Home.** What needs you, what's running, recent runs and their cost. | **Live map.** Every Claude Code session, workflow and helper agent, and how they hand work to each other. |
-| ![Workflows](docs/screenshots/workflows.png) | ![Workflow builder](docs/screenshots/builder.png) |
-| **Workflows.** Your saved workflows, plus ready-made samples to start from. | **Builder.** Steps, review pauses, a free shell step that loops back to “Fix it” if the tests fail, and the AI judge's acceptance criteria. |
+| ![Workflow builder](docs/screenshots/builder.png) | ![Workflows](docs/screenshots/workflows.png) |
+| **Builder.** Steps, review pauses, a free shell step that loops back to “Fix it” if the tests fail, and the AI judge's acceptance criteria. | **Workflows.** Your saved workflows, plus ready-made samples to start from. |
 | ![AI judge verdict](docs/screenshots/run-judge.png) | ![Step diff and rewind](docs/screenshots/run-changes.png) |
 | **AI judge.** Each criterion met or not, with evidence from the diff, plus token use and prompt-cache hit rate. | **Changes.** Exactly what a step changed, with one click to rewind the folder to before it. |
+| ![Home](docs/screenshots/home.png) | ![Live map](docs/screenshots/live-map.png) |
+| **Home.** What needs you, what's running, recent runs and their cost. | **Live map.** Every Claude Code session, workflow and helper agent, and how they hand work to each other. |
 
 ## Features
 
-- **Live graph** of Claude Code sessions and subagents, built by tailing the transcripts in `~/.claude`. By default it shows what's live: open sessions and running workflows. The filter bar at its top-right adds **Older** activity from a time range you pick.
-- **Activity feed**: prompts, helper starts and hand-backs, files written or edited
-- **Stop a running session** from the graph
-- **Workflow builder**: steps run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible
-- **Review checkpoints**: a step can pause for your approval or feedback before the workflow goes on
-- **AI judge**: write a step's acceptance criteria in plain words; an independent AI grades the step's real file changes against them, and its feedback drives the retry
-- **Step diffs and rewind**: every step is checkpointed, so you see exactly what it changed and can put the project back to before it (and undo that)
-- **Token insight**: each step's input/output tokens, prompt-cache hit rate and turns
-- **Steering**: send Claude guidance while a step runs (it continues the same conversation with your message), or redo a finished step with your feedback
-- **Sample workflows**: ready-made workflows (fix a bug, build a feature, explain a project, security check, …) to start from
-- **Run inputs, a separate copy of the project per run, and delivery as a branch or pull request**: see [Inputs, separate copies and branches](#inputs-separate-copies-and-branches)
-- **Command line**: list, run and validate workflows from the terminal, by name or straight from a workflow YAML file (`agent-graph run flow.yaml`, `agent-graph validate flows/*.yaml`), handy for scripts and CI
-- **Other AI models**: run a workflow, or a single step, on Google Gemini, OpenAI GPT, or a free local model through Ollama, alongside Claude
-- **Agent library**: ready-made subagent roles (product owner, architect, reviewer, tester, …) you can drop into steps
-- **Permissions editor** for `~/.claude/settings.json`
-- Workflows are plain YAML in `<project>/.claude/workflows/`, so they're versioned with your code and editable by hand
+### Workflows
+
+- **Builder**: drag-and-drop steps that run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible. Workflows are plain YAML in `<project>/.claude/workflows/`, so they're versioned with your code and editable by hand.
+- **Checks and retries**: a shell `check:` must pass, a failed step retries with the reason it failed, and `loopBack` sends the run back to an earlier step (for example, "tests fail → fix it again").
+- **AI judge**: write a step's acceptance criteria in plain words; an independent AI grades the step's real file changes against them, and its feedback drives the retry.
+- **Review checkpoints**: a step can pause for your approval or feedback before the workflow goes on.
+- **Steering**: send Claude guidance while a step runs (it continues the same conversation with your message), or redo a finished step with your feedback.
+- **Step diffs and rewind**: every step is checkpointed, so you see exactly what it changed and can put the project back to before it (and undo that).
+- **Run inputs, a separate copy of the project per run, and delivery as a branch or pull request**: see [Inputs, separate copies and branches](#inputs-separate-copies-and-branches).
+- **Command line**: list, run and validate workflows from the terminal, by name or straight from a workflow YAML file (`agent-graph run flow.yaml`, `agent-graph validate flows/*.yaml`), handy for scripts, cron and CI.
+- **Sample workflows**: ready-made workflows (fix a bug, build a feature, explain a project, security check, …) to start from.
+- **Agent library**: ready-made subagent roles (product owner, architect, reviewer, tester, …) you can drop into steps.
+- **Other AI models**: run a workflow, or a single step, on Google Gemini, OpenAI GPT, or a free local model through Ollama, alongside Claude.
+- **Token insight**: each step's cost, input/output tokens, prompt-cache hit rate and turns.
+
+### Live map
+
+- **Live graph** of Claude Code sessions, workflows and subagents, built by tailing the transcripts in `~/.claude`. By default it shows what's live; the filter bar at its top-right adds **Older** activity from a time range you pick.
+- **Activity feed**: prompts, helper starts and hand-backs, files written or edited.
+- **Stop a running session** from the graph.
+
+### Also
+
+- **Permissions editor** for `~/.claude/settings.json`.
 
 ## Requirements
 
