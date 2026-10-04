@@ -83,6 +83,11 @@ pub fn with_index<T>(cwd: &str, f: impl FnOnce(&[(&str, &str)]) -> Res<T>) -> Re
         let real = join(cwd, git(cwd, &["rev-parse", "--git-path", "index"], &[], None)?.trim());
         if exists(&real) {
             std::fs::copy(&real, &tmp).map_err(|e| e.to_string())?;
+            // keep the index's own time: git compares it with file times to catch edits made in the same
+            // second the index was written (same size, same mtime); a fresh time would hide those edits
+            if let Ok(t) = std::fs::metadata(&real).and_then(|m| m.modified()) {
+                let _ = std::fs::File::options().write(true).open(&tmp).and_then(|f| f.set_modified(t));
+            }
         } // else a new repo: git starts the index from scratch
         f(&[("GIT_INDEX_FILE", tmp.as_str())])
     })();

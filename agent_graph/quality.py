@@ -72,7 +72,7 @@ def _with_index(cwd, fn):
     try:
         real = os.path.join(cwd, _git(cwd, "rev-parse", "--git-path", "index").strip())
         if os.path.exists(real):
-            shutil.copyfile(real, tmp)
+            shutil.copy2(real, tmp)  # copy2 keeps its time, which git needs to catch same-second edits
         else:
             os.remove(tmp)  # a new repo: git starts the index from scratch
         return fn({"GIT_INDEX_FILE": tmp})
