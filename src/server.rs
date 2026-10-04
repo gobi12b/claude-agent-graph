@@ -92,7 +92,8 @@ impl App {
         let path = req.url().split('?').next().unwrap_or("").to_string();
         match (req.method().clone(), path.as_str()) {
             (Method::Get, "/" | "/index.html") => {
-                let body = INDEX_HTML.replace("__TOKEN__", &self.token);
+                let home = serde_json::to_string(&home()).unwrap_or_default();
+                let body = INDEX_HTML.replace("__TOKEN__", &self.token).replace("__HOME__", &home[1..home.len() - 1]);
                 let _ = req.respond(Response::from_string(body).with_header(hdr("Content-Type", "text/html; charset=utf-8")));
             }
             (Method::Get, "/icon.svg") => {

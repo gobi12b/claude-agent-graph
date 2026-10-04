@@ -246,6 +246,8 @@ impl Runner {
             for (k, v) in [("status", json!("running")), ("ended", Value::Null), ("stop", json!(false)), ("error", json!("")), ("plan", plan(&wf)), ("pid", json!(std::process::id()))] {
                 run[k] = v;
             }
+            // the folder moves on: undoing that rewind now would wipe out this replay's work
+            run.as_object_mut().unwrap().shift_remove("rewound");
             run.as_object_mut().unwrap().shift_remove("external");
             st.own.insert(rid.into());
             st.steer.insert(rid.into(), HashMap::new());
