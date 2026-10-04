@@ -207,9 +207,7 @@ fn cmd_runs(limit: usize, as_json: bool) -> i32 {
     }
     for r in &runs {
         let started = f(r, "started");
-        let when = chrono::DateTime::from_timestamp(started as i64, 0)
-            .map(|t| t.with_timezone(&chrono::Local).format("%b %d %H:%M").to_string())
-            .unwrap_or_default();
+        let when = format_local(started, "%b %d %H:%M");
         let ended = r.get("ended").and_then(Value::as_f64).filter(|e| *e != 0.0).unwrap_or_else(now);
         println!("{}  {when}  {:<9}  {:>7}  ${:.2}  {}", s(r, "id"), s(r, "status"), dur(ended - started), f(r, "cost"), s(r, "name"));
     }
@@ -217,6 +215,31 @@ fn cmd_runs(limit: usize, as_json: bool) -> i32 {
 }
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// Ctrl+C (SIGINT) and SIGTERM set INTERRUPTED; pressed twice, give up waiting and exit.
+#[cfg(unix)]
+fn on_interrupt() {
+    extern "C" fn handler(_: libc::c_int) {
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            // SAFETY: _exit is async-signal-safe.
+            unsafe { libc::_exit(130) };
+        }
+    }
+    // SAFETY: the handler only touches an atomic and calls _exit.
+    unsafe {
+        libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, handler as *const () as libc::sighandler_t);
+    }
+}
+
+#[cfg(windows)]
+fn on_interrupt() {
+    let _ = ctrlc::set_handler(|| {
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+    });
+}
 
 /// Lines typed in the terminal, read on their own thread so Ctrl+C can still stop the run mid-question.
 fn stdin_lines() -> &'static std::sync::Mutex<Receiver<String>> {
@@ -340,11 +363,7 @@ fn cmd_clean() -> i32 {
 #[allow(clippy::too_many_arguments)]
 fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json: bool, pairs: &[String], inputs_file: Option<&str>, isolation: Option<&str>) -> i32 {
     // Ctrl+C here, or Stop in the app (which sends the same signal), stops the run cleanly.
-    let _ = ctrlc::set_handler(|| {
-        if INTERRUPTED.swap(true, Ordering::SeqCst) {
-            std::process::exit(130); // pressed twice: give up waiting
-        }
-    });
+    on_interrupt();
     let mut wf = target(workflow, folder);
     if let Some(iso) = isolation {
         wf["isolation"] = json!(iso);

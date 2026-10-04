@@ -59,7 +59,8 @@ pub fn parse_ts(v: Option<&Value>) -> Option<f64> {
         return Some(t.timestamp_micros() as f64 / 1e6);
     }
     let naive = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
-    naive.and_local_timezone(chrono::Local).single().map(|t| t.timestamp_micros() as f64 / 1e6)
+    let as_utc = naive.and_utc().timestamp_micros() as f64 / 1e6;
+    Some(as_utc - local_offset(as_utc as i64) as f64)
 }
 
 fn uuid_re() -> &'static Regex {

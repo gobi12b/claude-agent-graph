@@ -22,16 +22,14 @@ default = []
 window = ["dep:wry", "dep:tao", "dep:png"]
 
 [dependencies]
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
-ctrlc = { version = "3", features = ["termination"] }
 indexmap = "2"
 regex = "1"
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
-webbrowser = "1"
 which = "7"
 wry = { version = "0.53", optional = true }
 tao = { version = "0.34", optional = true }
@@ -40,7 +38,13 @@ png = { version = "0.17", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Only what each OS needs, so macOS builds link nothing beyond the system library (and cross-compile without its SDK).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+webbrowser = "1"
+
 [target.'cfg(windows)'.dependencies]
+ctrlc = { version = "3", features = ["termination"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [profile.release]

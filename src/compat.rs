@@ -238,7 +238,19 @@ pub fn open_in_browser(path: &str) -> Res<()> {
             }
         }
     }
-    webbrowser::open(&url).map_err(|e| e.to_string())
+    open_url(&url)
+}
+
+/// Open a web address in the default browser.
+pub fn open_url(url: &str) -> Res<()> {
+    #[cfg(target_os = "macos")]
+    {
+        spawn_bg(Command::new("open").arg(url)).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        webbrowser::open(url).map_err(|e| e.to_string())
+    }
 }
 
 fn file_url(path: &Path) -> String {

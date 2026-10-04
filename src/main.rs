@@ -63,7 +63,7 @@ fn main() {
         }
     }
     println!("Claude Agent Graph running at {url}");
-    let _ = webbrowser::open(&url);
+    let _ = compat::open_url(&url);
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
     }

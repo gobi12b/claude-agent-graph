@@ -342,8 +342,38 @@ pub fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
 }
 
+/// The local time zone's offset from UTC at that moment, in seconds.
+pub fn local_offset(ts: i64) -> i32 {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn tzset();
+        }
+        static TZ: OnceLock<()> = OnceLock::new();
+        // SAFETY: tzset reads the TZ settings once; localtime_r only writes into our own tm.
+        unsafe {
+            TZ.get_or_init(|| tzset());
+            let t = ts as libc::time_t;
+            let mut tm: libc::tm = std::mem::zeroed();
+            if libc::localtime_r(&t, &mut tm).is_null() { 0 } else { tm.tm_gmtoff as i32 }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use chrono::{Offset, TimeZone};
+        chrono::Local.timestamp_opt(ts, 0).single().map(|d| d.offset().fix().local_minus_utc()).unwrap_or(0)
+    }
+}
+
+/// A Unix time written in local time with a strftime-style format.
+pub fn format_local(ts: f64, fmt: &str) -> String {
+    let secs = ts.floor() as i64;
+    let offset = chrono::FixedOffset::east_opt(local_offset(secs)).unwrap_or(chrono::FixedOffset::east_opt(0).unwrap());
+    chrono::DateTime::from_timestamp(secs, 0).map(|d| d.with_timezone(&offset).format(fmt).to_string()).unwrap_or_default()
+}
+
 pub fn local_time(fmt: &str) -> String {
-    chrono::Local::now().format(fmt).to_string()
+    format_local(now(), fmt)
 }
 
 // ---- processes ------------------------------------------------------------------------------
