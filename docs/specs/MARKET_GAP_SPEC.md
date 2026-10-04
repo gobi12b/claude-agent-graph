@@ -541,7 +541,7 @@ Not done:
 
 ### Also shipped (not in this spec)
 
-- **"Only workflows running now"** toggle on the main graph, under "Show activity from". It hides other Claude sessions and finished runs, and shows only running or review-waiting workflows with their step sessions and helpers. It's remembered between visits.
+- **"Only show" toggles** on the live map, under "Show activity from": **Live sessions** (open Claude sessions and their helpers) and **Running workflows** (running or review-waiting workflows with their steps and helpers). They can be combined, are remembered between visits, dim the time filter while on, and are switched off by picking a time range. Checked in a headless browser with real sessions and a running workflow.
 
 ## Sources
 

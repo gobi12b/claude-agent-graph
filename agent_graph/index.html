@@ -129,7 +129,11 @@
     .pg { padding: 20px 16px 48px; } .ehead { flex-wrap: wrap; } .form .row2 { grid-template-columns: 1fr; }
   }
   button:focus-visible, summary:focus-visible, .block:focus-visible { outline: 2px solid var(--prompt); outline-offset: 2px; }
-  .livetoggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .onlyrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .chip.tog::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
+    border: 1.5px solid currentColor; vertical-align: 1px; }
+  .chip.tog.on::before { background: currentColor; }
+  #windows.muted .chip { opacity: .45; }
   #liveempty { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; color: var(--muted); font-size: 14px; }
   #liveempty.on { display: grid; }
   #welcome { position: absolute; inset: 0; display: none; place-items: center; pointer-events: none; padding: 24px; }
@@ -510,7 +514,7 @@
       </div>
     </details>
     <div id="conn"><i></i><span>connecting…</span></div>
-    <div id="liveempty"><div>No workflows are running right now. Turn off “Only workflows running now” to see everything.</div></div>
+    <div id="liveempty"><div id="liveemptytext"></div></div>
     <div id="welcome"><div class="card0">
       <h1>Watch and direct Claude's work</h1>
       <p>This window shows what Claude is doing on your computer as it happens. Nothing is running right now.</p>
@@ -526,8 +530,10 @@
     <section>
       <h2>Show activity from</h2>
       <div class="chips" id="windows"></div>
-      <label class="livetoggle" title="Hide your other Claude sessions and finished workflows, and show only workflows that are running or waiting for your review, with their steps and helpers">
-        <input type="checkbox" id="liveflows"> Only workflows running now</label>
+      <div class="onlyrow"><span>Only show</span><div class="chips" id="onlylive">
+        <button class="chip tog" data-only="sessions" aria-pressed="false" title="Only Claude sessions that are open now, with their helpers">Live sessions</button>
+        <button class="chip tog" data-only="flows" aria-pressed="false" title="Only workflows that are running or waiting for your review, with their steps and helpers">Running workflows</button>
+      </div></div>
     </section>
     <section id="details"><div class="empty">Click a circle or square on the left to see what it is doing.</div></section>
     <nav class="tabs" id="tabs" role="tablist">
@@ -564,8 +570,10 @@ const KIND_WORD = { session: "Claude session", agent: "Helper agent", workflow: 
 const word = (map, v) => map[v] || v || "";
 let windowSec = 86400;
 try { const s = localStorage.getItem("ag-window"); if (s !== null) windowSec = s === "Infinity" ? Infinity : +s; } catch {}
-let liveFlowsOnly = false;  // the graph shows only running workflows (and waiting ones), their steps and helpers
-try { liveFlowsOnly = localStorage.getItem("ag-liveflows") === "1"; } catch {}
+// "Only show" toggles: open sessions and/or running (or review-waiting) workflows, each with their helpers.
+// While either is on, the time filter doesn't apply.
+const only = { sessions: false, flows: false };
+try { only.sessions = localStorage.getItem("ag-livesessions") === "1"; only.flows = localStorage.getItem("ag-liveflows") === "1"; } catch {}
 
 const canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -606,13 +614,18 @@ const rootOf = n => { let c = n, guard = 0; while (c && c.kind === "agent" && gu
 
 function visibleIds() {
   const t = now(), ids = new Set(["you"]);
-  if (liveFlowsOnly) {
-    for (const r of runs) {
-      if (r.status !== "running" && r.status !== "waiting" && !r.finishing) continue;
-      ids.add("w:" + r.id);
-      for (const a of r.attempts) ids.add("s:" + a.session);
+  if (only.sessions || only.flows) {
+    if (only.flows) {
+      for (const r of runs) {
+        if (r.status !== "running" && r.status !== "waiting" && !r.finishing) continue;
+        ids.add("w:" + r.id);
+        for (const a of r.attempts) ids.add("s:" + a.session);
+      }
     }
-    for (const n of state.nodes) {  // helpers started by those steps
+    if (only.sessions) {  // open sessions; workflow steps belong to the workflows toggle
+      for (const n of state.nodes) if (n.kind === "session" && !n.step && !n.workflowStep && !n.id.startsWith("n:") && n.status !== "ended") ids.add(n.id);
+    }
+    for (const n of state.nodes) {  // helpers started by what's shown
       if (n.kind !== "agent") continue;
       const r = rootOf(n);
       if (r && ids.has(r.id)) ids.add(n.id);
@@ -734,8 +747,11 @@ function renderHud() {
     `<div class="stat" title="${live} Claude session${live === 1 ? "" : "s"} open"><b>${busy}</b>working now</div>
      ${running ? `<div class="stat"><b>${running}</b>helper${running === 1 ? "" : "s"} running</div>` : ""}`;
   // first-run / quiet state: explain the app instead of showing an empty canvas
-  document.getElementById("welcome").classList.toggle("on", vis.size <= 1 && !waiting.length && !liveFlowsOnly);
-  document.getElementById("liveempty").classList.toggle("on", vis.size <= 1 && liveFlowsOnly);
+  const filtering = only.sessions || only.flows;
+  document.getElementById("welcome").classList.toggle("on", vis.size <= 1 && !waiting.length && !filtering);
+  document.getElementById("liveempty").classList.toggle("on", vis.size <= 1 && filtering);
+  document.getElementById("liveemptytext").textContent = !filtering ? "" :
+    `${only.sessions && only.flows ? "No Claude sessions are open and no workflows are running" : only.sessions ? "No Claude sessions are open" : "No workflows are running"} right now. Turn off the “Only show” filter to see everything.`;
   void hour;
 }
 
@@ -835,15 +851,27 @@ function markWindow() { for (const b of winEl.children) b.classList.toggle("on",
 winEl.addEventListener("click", e => {
   const b = e.target.closest(".chip"); if (!b) return;
   windowSec = +b.dataset.s; try { localStorage.setItem("ag-window", String(windowSec)); } catch {}
+  if (only.sessions || only.flows) {
+    only.sessions = only.flows = false;
+    try { localStorage.setItem("ag-livesessions", "0"); localStorage.setItem("ag-liveflows", "0"); } catch {}
+    markOnly();
+  }
   markWindow(); renderHud();
 });
 markWindow();
-const liveEl = document.getElementById("liveflows");
-liveEl.checked = liveFlowsOnly;
-liveEl.addEventListener("change", () => {
-  liveFlowsOnly = liveEl.checked; try { localStorage.setItem("ag-liveflows", liveFlowsOnly ? "1" : "0"); } catch {}
-  renderHud();
+const onlyEl = document.getElementById("onlylive");
+function markOnly() {
+  for (const b of onlyEl.children) { b.classList.toggle("on", only[b.dataset.only]); b.setAttribute("aria-pressed", only[b.dataset.only]); }
+  winEl.classList.toggle("muted", only.sessions || only.flows);
+  winEl.title = only.sessions || only.flows ? "Not used while “Only show” is on" : "";
+}
+onlyEl.addEventListener("click", e => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  only[b.dataset.only] = !only[b.dataset.only];
+  try { localStorage.setItem("ag-livesessions", only.sessions ? "1" : "0"); localStorage.setItem("ag-liveflows", only.flows ? "1" : "0"); } catch {}
+  markOnly(); renderHud();
 });
+markOnly();
 
 // ---- physics ------------------------------------------------------------
 const SPRING = { spawn: 120, message: 150, handback: 120, retry: 110 };
@@ -1429,7 +1457,7 @@ function startRun(wid, last) {
   const val = (k, d) => last?.[k] ?? prev[k] ?? d.default ?? "";
   const field = ([k, d]) => {
     const label = `${esc(d.description || k)}${d.required ? "" : ` <span class="hint">optional</span>`}`, v = val(k, d);
-    if (d.type === "boolean") return `<label class="f" style="flex-direction:row;gap:8px;align-items:center"><input type="checkbox" data-in="${esc(k)}" ${v === true || v === "true" ? "checked" : ""}> ${label}</label>`;
+    if (d.type === "boolean") return `<label class="chk"><input type="checkbox" data-in="${esc(k)}" ${v === true || v === "true" ? "checked" : ""}> ${label}</label>`;
     if (d.type === "choice") return `<label class="f">${label}<select data-in="${esc(k)}">${d.options.map(o => `<option ${String(v) === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`;
     if (d.type === "text") return `<label class="f">${label}<textarea data-in="${esc(k)}" rows="4">${esc(String(v))}</textarea></label>`;
     return `<label class="f">${label}<input data-in="${esc(k)}" ${d.type === "number" ? `type="number" step="any"` : ""} value="${esc(String(v))}" autocomplete="off"></label>`;
