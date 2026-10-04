@@ -1,7 +1,7 @@
 # Market comparison and feature-gap spec
 
 **Author:** market research · **For:** product and engineering · **Date:** 2026-10-04
-**Branch:** `spec/market-gap-analysis` · **Status:** proposal
+**Branch:** `spec/market-gap-analysis` · **Status:** proposal; G1, G2 and G5 implemented in the Rust version (see [section 9](#9-implementation-status))
 
 ## 1. Why this document
 
@@ -71,24 +71,24 @@ New features must not weaken these. In particular, isolation (G1) has to keep di
 
 Scored on how often the gap comes up in reviews and competitor comparisons (demand), how much it limits current users (pain), and effort (S ≤ 1 week, M 1–3 weeks, L > 3 weeks, for one engineer on both implementations).
 
-| ID | Gap | Demand | Pain | Effort | Value rank | Priority |
-|---|---|---|---|---|---|---|
-| G1 | Isolated workspace per run (git worktree, optional container) | High | High: parallel steps and runs share one folder | M | 2 | **P0** |
-| G2 | Workflow inputs and templating | High | High: every run of "Fix a bug" means editing the prompt | S | 1 | **P0** |
-| G3 | Structured outputs and conditional routing | High | Medium | M | 8 | **P2** |
-| G4 | Triggers: schedule, file watch, webhook, GitHub | High | Medium | M | 6 | **P1** |
-| G5 | Git delivery: branch, commit, pull request | High | Medium | S | 3 | **P0** |
-| G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | 5 | **P1** |
-| G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | 4 | **P1** |
-| G8 | Fan-out over a list (`forEach`) | Medium | Medium | M | 12 | **P3** |
-| G9 | Outbound notifications and remote approvals (Slack, Discord, webhook) | Medium | Medium | M | 9 | **P2** |
-| G10 | Eval suites: run a workflow over a dataset, compare to a baseline | Medium | Low today, high for teams | L | 7 | **P1** |
-| G11 | MCP: per-workflow servers, and Agent Graph as an MCP server | Medium | Low | M | 11 | **P2** |
-| G12 | Sub-workflows (call a workflow as a step) | Medium | Low | S | 14 | **P3** |
-| G13 | Generate a workflow from a description | Medium | Low (adoption) | S | 10 | **P2** |
-| G14 | Trace export via OpenTelemetry | Low–Medium | Low | S | 15 | **P3** |
-| G15 | Analytics: cost, pass rate and flaky steps over time | Low–Medium | Low | S | 13 | **P3** |
-| G16 | Import / share workflows from a URL or git repo | Low–Medium | Low | S | 16 | **P3** |
+| ID | Gap | Demand | Pain | Effort | Value rank | Priority | Status |
+|---|---|---|---|---|---|---|---|
+| G1 | Isolated workspace per run (git worktree, optional container) | High | High: parallel steps and runs share one folder | M | 2 | **P0** | ✅ Rust (worktree; containers not yet) |
+| G2 | Workflow inputs and templating | High | High: every run of "Fix a bug" means editing the prompt | S | 1 | **P0** | ✅ Rust |
+| G3 | Structured outputs and conditional routing | High | Medium | M | 8 | **P2** | Not started |
+| G4 | Triggers: schedule, file watch, webhook, GitHub | High | Medium | M | 6 | **P1** | Not started |
+| G5 | Git delivery: branch, commit, pull request | High | Medium | S | 3 | **P0** | ✅ Rust |
+| G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | 5 | **P1** | Not started |
+| G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | 4 | **P1** | Not started |
+| G8 | Fan-out over a list (`forEach`) | Medium | Medium | M | 12 | **P3** | Not started |
+| G9 | Outbound notifications and remote approvals (Slack, Discord, webhook) | Medium | Medium | M | 9 | **P2** | Not started |
+| G10 | Eval suites: run a workflow over a dataset, compare to a baseline | Medium | Low today, high for teams | L | 7 | **P1** | Not started |
+| G11 | MCP: per-workflow servers, and Agent Graph as an MCP server | Medium | Low | M | 11 | **P2** | Not started |
+| G12 | Sub-workflows (call a workflow as a step) | Medium | Low | S | 14 | **P3** | Not started |
+| G13 | Generate a workflow from a description | Medium | Low (adoption) | S | 10 | **P2** | Not started |
+| G14 | Trace export via OpenTelemetry | Low–Medium | Low | S | 15 | **P3** | Not started |
+| G15 | Analytics: cost, pass rate and flaky steps over time | Low–Medium | Low | S | 13 | **P3** | Not started |
+| G16 | Import / share workflows from a URL or git repo | Low–Medium | Low | S | 16 | **P3** | Not started |
 
 Priority follows the value ranking in 4.1: ranks 1–3 are P0, 4–7 P1, 8–11 P2 and 12–16 P3.
 
@@ -136,6 +136,8 @@ Conventions for every spec:
 
 ### G1. Isolated workspace per run
 
+**Status:** ✅ Rust, worktree only. Not yet: containers, per-step worktrees, Python. Details in section 9.
+
 **Problem.** Steps and runs share the project folder. Two runs on the same project collide, parallel steps see each other's half-finished edits, and the README has to warn that a step's diff can include another step's changes. Conductor, Claude Squad, Vibe Kanban and Archon all default to a git worktree per agent or run. Sculptor uses containers.
 
 **YAML**
@@ -173,6 +175,8 @@ container:                 # only for isolation: container
 ---
 
 ### G2. Workflow inputs and templating
+
+**Status:** ✅ Rust. Not yet: `env.<NAME>` and `steps.<id>.json` (that one needs G3), Python. Details in section 9.
 
 **Problem.** Samples contain `<describe …>` and `{task}` placeholders that the user must edit before each run, and `validate` warns about them. Archon, n8n, LangGraph and GitHub Agentic Workflows all take typed inputs at run time.
 
@@ -281,6 +285,8 @@ on:
 ---
 
 ### G5. Git delivery: branch, commit, PR
+
+**Status:** ✅ Rust. Not yet: delivery without a worktree, the "Open pull request" step template, GitLab, Python. Details in section 9.
 
 **Problem.** The last mile in every competitor is "here is a PR". Today the user commits by hand.
 
@@ -464,6 +470,78 @@ Each release must keep the Python and Rust implementations in parity, enforced b
 3. Should `deliver` support GitLab and Bitbucket (`glab`) from the start?
 4. Remote approval (G9) adds attack surface. Is a Slack-only relay enough, so we never expose the app's own HTTP server?
 5. Do eval fixtures (G10) live as branches in the user's repo, or as patch files under `.claude/workflows/evals/`?
+
+## 9. Implementation status
+
+Updated 2026-10-04. Branch `rust-inputs-worktree-delivery` (based on `spec/market-gap-analysis`).
+
+| ID | Status | Where |
+|---|---|---|
+| G2 Inputs and templating | ✅ Done in Rust | `src/template.rs`, validation in `src/workflows.rs`, runner, CLI, run form in `index.html` |
+| G1 Separate worktree per run | ✅ Done in Rust (worktree) | `src/worktree.rs`, `src/runner.rs`, run view in `index.html` |
+| G5 Branch, commit, PR | ✅ Done in Rust | `src/worktree.rs` (commits, branch, push, `gh pr create`), `src/runner.rs` |
+| Everything else (G3, G4, G6–G16) | Not started | |
+| Python version of G1, G2, G5 | Not started | The Python app warns about the new keys as unknown settings and ignores them |
+
+### G2: inputs and templating
+
+Done:
+- `inputs:` with the types string, text, number, boolean and choice, plus `required`, `default` and `options`. The shorthand `name: description` makes a required input.
+- `{{ … }}` templates in `prompt`, `run`, `check`, `judge` and every `deliver` text. They can use `inputs.*`, `steps.<id>.output`, `run.id`, `run.folder`, `run.project` and `run.workflow`, with the filters `default("…")`, `slug`, `trim` and `json`. Quoted literals work, so `{{ "{{" }}` writes a literal `{{`.
+- Validation errors for references to unknown inputs or steps, unknown filters and unclosed `{{`. Lint warnings for unused inputs and for unknown keys inside `inputs`, `worktree` and `deliver`.
+- **Beyond the spec:** in `run:` and `check:`, every value is single-quoted for the shell, so an input can't inject commands. Shell steps also get each input as `$INPUT_<NAME>`.
+- Run form in the app, prefilled with the last values used (stored per workflow in the browser). **Run again** reuses the run's values. The run view lists the inputs.
+- CLI: `--input NAME=VALUE` (repeatable) and `--inputs file.json`. In a terminal, missing required inputs are asked for. Without a terminal, the run exits with code `1` and names what's missing.
+- Replaying a step reuses the run's input values.
+
+Not done: `env.<NAME>` with `envAllow:`, `steps.<id>.json.*` (needs G3's structured outputs), changing the samples to use `inputs` (they keep their `{task}` question), Python.
+
+### G1: separate worktree per run
+
+Done:
+- `isolation: worktree` with `worktree: {base, keep, setup, copy}`. Worktrees are created in `~/.config/claude-agent-graph/worktrees/<run id>`, outside the project, so they never appear as untracked files there. A workflow in a subfolder of its repository runs in the same subfolder of the worktree.
+- Validation fails if the folder isn't a git repository or the base doesn't exist (for example, a repository with no commits).
+- `copy` files and the `setup` command are excluded from the run's changes: the base snapshot is taken after both.
+- Step checkpoints, diffs, rewind and the judge all work in the worktree, so each step's diff is exact. Rewind, undoing a rewind and replay bring back a removed worktree with the run's files.
+- `keep: always | onFailure | never`. The final files are kept as a git tree, so **Apply**, **Create branch** and **Open pull request** still work after the worktree is gone.
+- Run view: **Apply to my folder**, **↶ Undo apply**, **Create / Update branch**, **Open pull request** and **Discard copy**. API: `/api/runs/apply`, `/api/runs/unapply`, `/api/runs/deliver` and `/api/runs/discard`.
+- **Different from the spec:** Apply doesn't require a clean working tree. It applies the run's patch atomically (all or nothing, with a clear message if it doesn't apply) and can be undone.
+- Worktree folders are never counted as projects, so their copy of `.claude/workflows` doesn't create duplicate workflows.
+- CLI: `--isolation worktree|none` for one run, `agent-graph clean`, and a note in the output when a copy is kept.
+
+Not done: `isolation: container` (validation says it's not supported yet), per-step `isolation: worktree` with merge back, showing worktree sessions under their project in the live graph (they show under the worktree path), an automated test of two runs at once, Python.
+
+### G5: branch, commit, PR
+
+Done:
+- `deliver: true`, or a mapping with `{branch, commit: perStep | squash, message, push, pr: {draft, title, body, base}, when: success | always}`.
+- Commits are built from the step checkpoints with a private index and `commit-tree`, on top of the base commit. The user's checkout, HEAD and index are never touched.
+- `perStep` makes one commit per successful step, in the order the steps finished, skipping steps that changed nothing, plus a final commit for anything changed after the last step. `squash` makes a single commit.
+- A branch name that's taken gets `-2`, `-3` and so on. Delivering again after a replay moves the same branch (pushed with `--force-with-lease`) and keeps the existing PR.
+- `push` (implied by `pr`) and `gh pr create`. The `summary` body lists the inputs, each step's result, its judge score and its cost.
+- Without a git identity, commits are made as "Claude Agent Graph <agent-graph@localhost>".
+- Delivery errors are recorded on the run and shown in the run view and the CLI (exit code `1`). The run itself still counts as succeeded.
+
+Not done:
+- **Different from the spec:** `deliver` requires `isolation: worktree`. Delivering from the user's own folder isn't supported.
+- The **Open pull request** step template, GitLab or Bitbucket, Python.
+
+### Testing
+
+- Unit tests: `cargo test` (9 pass). They cover template rendering, shell quoting, reference checks, input coercion, and a worktree test against a real git repository: copy and setup are excluded, the commit chain skips no-op steps, branch names don't collide, apply and undo work, and the worktree is removed and recreated.
+- End-to-end, using shell steps only (no AI cost), with an isolated `HOME`:
+  - CLI runs with inputs.
+  - An input containing a shell injection attempt, which was quoted safely.
+  - A branch with per-step commits that doesn't contain `.env`.
+  - A failed run with `when: always` and `squash`, where the worktree was kept and `clean` removed it.
+  - `--isolation none`.
+  - Pushing to a bare `origin`.
+  - The app API: start without a required input (refused), start with inputs, apply, apply twice (refused), unapply, deliver with a PR and no `origin` (clear error), discard.
+- Not tested: opening a real GitHub PR (no GitHub remote in the test environment), and the new UI in a browser. The page's JavaScript passes a syntax check.
+
+### Also shipped (not in this spec)
+
+- **"Only workflows running now"** toggle on the main graph, under "Show activity from". It hides other Claude sessions and finished runs, and shows only running or review-waiting workflows with their step sessions and helpers. It's remembered between visits.
 
 ## Sources
 
