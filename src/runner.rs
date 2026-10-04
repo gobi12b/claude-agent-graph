@@ -1015,6 +1015,9 @@ impl Runner {
         if let Some(sess) = session {
             st.proc_of.insert(sess.into(), p.clone());
         }
+        if st.runs.get(rid).is_some_and(|r| b(r, "stop")) {
+            compat::kill_tree(pid); // Stop was pressed while this step was still starting
+        }
         p
     }
 

@@ -46,7 +46,7 @@ Every platform needs these three things:
 | | |
 |---|---|
 | **Claude Code** | The `claude` CLI on your `PATH`, signed in (run `claude` once and log in). |
-| **Python** | 3.9 or newer |
+| **Python** | 3.9 or newer. Not needed for the [Rust version](#rust-version-single-binary). |
 | **git** | Used by the installer. On Windows, Git for Windows also supplies the bash that shell steps use. |
 
 Check what you already have:
@@ -159,6 +159,59 @@ cd claude-agent-graph
 python -m pip install ruamel.yaml
 python -m agent_graph
 ```
+
+## Rust version (single binary)
+
+The app is also written in Rust (`src/`). It has the same features, the same UI, and the same files on disk (workflows, runs, settings), so you can switch between the Python and Rust versions freely. You get one self-contained `agent-graph` program: no Python, no virtual environment, faster start-up and lower memory use. The UI, icons and built-in agent, step and sample files are compiled into it.
+
+### Prerequisites
+
+Every platform needs **Claude Code** and **git**, as above, plus the **Rust toolchain** (1.89 or newer) from [rustup.rs](https://rustup.rs):
+
+| OS | Install Rust | Also needed to build |
+|---|---|---|
+| macOS | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | Command Line Tools: `xcode-select --install` |
+| Linux | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | A C linker. Debian/Ubuntu: `sudo apt install build-essential`; Fedora: `sudo dnf install gcc`; Arch: `sudo pacman -S base-devel` |
+| Windows 10 / 11 | `winget install --id Rustlang.Rustup -e` | Visual Studio Build Tools with the "Desktop development with C++" workload (rustup offers to install them) |
+
+Open a new terminal afterwards, then check: `cargo --version`.
+
+### Build and install
+
+```sh
+# straight from GitHub (puts agent-graph in ~/.cargo/bin, which rustup adds to PATH)
+cargo install --git https://github.com/gobi12b/claude-agent-graph --branch rust-rewrite
+
+# or from a clone
+git clone https://github.com/gobi12b/claude-agent-graph
+cd claude-agent-graph
+cargo install --path .              # or: cargo build --release  →  target/release/agent-graph(.exe)
+```
+
+Everything works the same as the Python version: `agent-graph`, `agent-graph --browser`, `agent-graph --port 9000`, and the terminal commands (`list`, `run`, `validate`, `runs`).
+
+### Native window (optional)
+
+By default the Rust build opens the app in your browser. For a native window, build with the `window` feature:
+
+```sh
+cargo install --path . --features window
+```
+
+| OS | Window | What to install first |
+|---|---|---|
+| Linux | WebKitGTK | Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev`; Fedora: `sudo dnf install webkit2gtk4.1-devel gtk3-devel`; Arch: `sudo pacman -S webkit2gtk-4.1 gtk3` |
+| macOS | WKWebView (built in) | Nothing |
+| Windows | Edge WebView2 (preinstalled on Windows 10 and 11) | Nothing |
+
+If the window can't open (for example over SSH), the app falls back to the browser.
+
+### Notes for the Rust version
+
+- **Built-in defaults** (`agents.yaml`, `steps.yaml`, `samples.yaml`) are read from `agent_graph/defaults/` when you run from a clone, so you can edit them there. An installed binary writes its built-in copies to `~/.config/claude-agent-graph/builtin/` (refreshed when you upgrade). To use your own folder, set `AGENT_GRAPH_DEFAULTS=/path/to/defaults`.
+- **Saving a workflow** from the builder keeps your comments, key order and the exact text of unchanged values, as the Python version does. New prompts longer than one line are written as `|` blocks.
+- **Unicode** works on Windows without any special mode, because Rust strings are always UTF-8.
+- **Tests:** `cargo test`. **Cross-check another OS:** `rustup target add x86_64-pc-windows-gnu && cargo check --target x86_64-pc-windows-gnu`.
 
 ## Run
 
@@ -349,7 +402,7 @@ Each Claude step's **Result** tab shows the tokens it read and wrote, its number
 - **Shell steps** (`run:`) and **checks** (`check:`) run with `bash -lc` in the workflow folder: bash on macOS/Linux, Git Bash on Windows (found via `CLAUDE_CODE_GIT_BASH_PATH`, `git`, or the default install paths). If there's no bash on Windows, they fall back to `cmd.exe`.
 - **Opening files** uses `xdg-open` on Linux, `open` on macOS and the default app association on Windows. If an IDE is installed (VS Code, Cursor, Windsurf, JetBrains IDEs, Zed or Sublime Text), its CLI is used instead.
 - **Notifications** (e.g. "a step is waiting for your review") use `notify-send` on Linux, Notification Center on macOS and a tray balloon on Windows.
-- On **Windows**, the app restarts itself in Python's UTF-8 mode, because transcripts and YAML files are UTF-8.
+- On **Windows**, the Python app restarts itself in Python's UTF-8 mode, because transcripts and YAML files are UTF-8. The Rust app doesn't need to.
 
 ## Where things live
 
@@ -399,6 +452,25 @@ agent_graph/
   index.html    the whole UI (single file, no build step)
   defaults/     built-in agent library and step templates
 ```
+
+The Rust version (`cargo run -- --browser`, or `cargo run -- list`):
+
+```
+src/
+  main.rs       command line, window
+  server.rs     HTTP server, API routes, live event stream
+  watcher.rs    tails ~/.claude transcripts and builds the graph
+  workflows.rs  validation, lint, IDE integration, permissions editor
+  runner.rs     the workflow runner (steps, retries, reviews, steering, loop-backs)
+  wfstore.rs    workflow and defaults storage
+  yamldoc.rs    YAML that keeps your comments on save
+  quality.rs    step checkpoints (diff, rewind) and the AI judge
+  providers.rs  Claude, Gemini, GPT and Ollama
+  compat.rs     the Linux / macOS / Windows differences
+  cli.rs        list / run / validate / runs
+```
+
+Both versions serve the same `agent_graph/index.html`.
 
 ## License
 

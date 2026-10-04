@@ -2,6 +2,7 @@
 name = "claude-agent-graph"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 description = "A live graph of your Claude Code sessions and subagents, plus a visual workflow builder and runner."
 license = "MIT"
 authors = ["Gobinath Manokaran"]
@@ -26,7 +27,7 @@ clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }
 indexmap = "2"
 regex = "1"
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
