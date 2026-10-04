@@ -1,0 +1,174 @@
+# Claude Agent Graph: sample workflows shown under "Start from a sample".
+#
+# Choosing one asks for a project folder (and, when `ask` is set, a short description of the task),
+# then opens it in the builder as a normal workflow you can change before saving.
+#
+# Per sample: icon, name, description (one line), ask (the question shown when creating it; the answer
+# replaces {task} in the step prompts), example (placeholder text for that answer), and steps.
+# Per step: name, prompt, and optional review (pause for your review), retries, agents (helper roles
+# from agents.yaml), check (shell command that must succeed).
+
+samples:
+
+  fix-bug:
+    icon: "🐞"
+    name: Fix a bug
+    description: Find the cause of a problem, fix it, and check nothing else broke. Pauses so you can approve the plan first.
+    ask: What's going wrong?
+    example: e.g. The Save button does nothing when the title is empty.
+    steps:
+      - name: Find the cause
+        review: true
+        prompt: |
+          The user reports this problem: {task}
+
+          Investigate the codebase to find the root cause. Do not change any files yet.
+          Explain in plain language what is going wrong and why, then give a short, numbered plan to fix it.
+      - name: Fix it
+        retries: 1
+        prompt: |
+          Fix the problem using the plan from the previous step. Keep the change small and focused,
+          and match the existing code style.
+        judge: |
+          - The change fixes the root cause described in the plan, not just the visible symptom
+          - The change is small and focused: no unrelated files or refactors
+          - No debugging leftovers (print statements, commented-out code, TODOs added)
+      - name: Test & fix
+        retries: 2
+        agents: [qa-engineer]
+        prompt: |
+          Find out how this project runs its tests (README, package or build files) and run them.
+          Add a test that would have caught this bug if there is a sensible place for one.
+          Fix any failures caused by the change.
+      - name: Summary
+        prompt: |
+          Write a short summary for the user, in plain language: what was wrong, what you changed
+          (with file names), and how it was checked.
+
+  new-feature:
+    icon: "✨"
+    name: Build a new feature
+    description: From idea to working feature, with a spec and a design you approve before any code is written.
+    ask: What should the feature do?
+    example: e.g. Let users export their notes as a PDF.
+    steps:
+      - name: Write spec
+        review: true
+        agents: [business-analyst]
+        prompt: |
+          The user wants this feature: {task}
+
+          Write a requirements spec as docs/spec.md: the goal, who it's for, user stories with
+          Given/When/Then acceptance criteria, and open questions. Read the existing code first and fit it.
+      - name: Design
+        review: true
+        agents: [ux-designer]
+        prompt: |
+          Design the user experience for docs/spec.md. Write docs/design.md covering the screens, the flow,
+          empty and error states, and accessibility. Do not change application code.
+      - name: Build it
+        retries: 2
+        prompt: |
+          Implement the feature described in docs/spec.md and docs/design.md. Keep changes focused,
+          match the existing code style, and add tests for the new behaviour.
+        judge: |
+          - Every requirement in docs/spec.md is implemented (name any that are missing)
+          - The empty and error states from docs/design.md are handled
+          - Tests were added that exercise the new behaviour
+      - name: Test & fix
+        retries: 2
+        prompt: |
+          Run the project's tests and build. Fix any failures caused by the new feature.
+      - name: Code review
+        agents: [code-reviewer]
+        prompt: |
+          Review all the changes made for this feature for bugs, edge cases and unclear code.
+          Fix anything important, then list what you checked and what you changed.
+
+  explain-project:
+    icon: "📖"
+    name: Explain this project
+    description: Get a friendly guide to an unfamiliar project, written for someone new to it. Doesn't change any code.
+    steps:
+      - name: Explore
+        prompt: |
+          Explore this project without changing anything: what it does, how it is organised, the main
+          parts and how they fit together, how to run it, and how to run its tests.
+      - name: Write the guide
+        review: true
+        agents: [technical-writer]
+        prompt: |
+          Using what the previous step found, write docs/PROJECT_GUIDE.md for someone new to the project:
+          what it is for, a map of the folders, how the main parts work together, how to run and test it,
+          and where to start when making a change. Use plain language and short sections.
+
+  code-cleanup:
+    icon: "🧹"
+    name: Review & tidy up code
+    description: Have the recent changes reviewed, apply the important fixes, and make sure the tests still pass.
+    steps:
+      - name: Review
+        review: true
+        agents: [code-reviewer]
+        prompt: |
+          Review the recent changes in this project (use `git diff` and `git log` if it is a git repository;
+          otherwise review the main source files). Do not edit files. List concrete problems with file and
+          line references, ordered by importance, and mark which ones are worth fixing now.
+      - name: Apply fixes
+        retries: 1
+        prompt: |
+          Fix the problems the review marked as worth fixing now, plus anything the user asked for in their
+          review notes. Keep each fix small.
+      - name: Test & fix
+        retries: 2
+        prompt: |
+          Run the project's tests and build. Fix any failures caused by the recent changes.
+
+  security-check:
+    icon: "🛡"
+    name: Security check
+    description: Look for security problems such as leaked secrets, unsafe input handling and risky dependencies, then fix the serious ones after you agree.
+    steps:
+      - name: Find risks
+        review: true
+        agents: [appsec-engineer]
+        prompt: |
+          Check this project for security problems: hard-coded secrets, unsafe handling of user input,
+          injection risks, weak authentication, risky dependencies and unsafe configuration.
+          Do not change files. Write docs/security-report.md listing each finding with its severity
+          (high / medium / low), where it is, and how to fix it.
+      - name: Fix serious issues
+        retries: 1
+        prompt: |
+          Fix the high-severity findings from docs/security-report.md, and any others the user asked for in
+          their review notes. Update the report to mark what was fixed.
+
+  update-docs:
+    icon: "📝"
+    name: Update the README
+    description: Bring the README up to date with what the project actually does today.
+    steps:
+      - name: Update README
+        review: true
+        agents: [technical-writer]
+        prompt: |
+          Read the project and its current README. Update the README so it is accurate and easy to follow:
+          what the project does, how to install it, how to run it, how to test it, and how to contribute.
+          Keep anything in the old README that is still correct.
+
+  release-notes:
+    icon: "🚀"
+    name: Write release notes
+    description: Turn the recent changes into clear release notes for users, ready for you to approve.
+    ask: Which release is this? (optional)
+    example: e.g. version 2.3, or "changes since last Friday"
+    steps:
+      - name: Write release notes
+        review: true
+        agents: [release-manager]
+        prompt: |
+          Write release notes for this project. Release: {task}
+
+          Use the git history and changes (if this is a git repository) to find what changed. Write
+          RELEASE_NOTES.md for users, not developers: new features, improvements and fixes, in plain
+          language, grouped under clear headings. Leave out internal changes users won't notice.

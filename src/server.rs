@@ -16,9 +16,9 @@ use crate::util::*;
 use crate::watcher::Graph;
 use crate::{providers, wfstore, workflows};
 
-const INDEX_HTML: &str = include_str!("../agent_graph/index.html");
-const ICON_SVG: &[u8] = include_bytes!("../agent_graph/assets/icon.svg");
-pub const ICON_PNG: &[u8] = include_bytes!("../agent_graph/assets/icon.png");
+const INDEX_HTML: &str = include_str!("../ui/index.html");
+const ICON_SVG: &[u8] = include_bytes!("../assets/icon.svg");
+pub const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 const POLL: Duration = Duration::from_millis(500);
 const HEARTBEAT: Duration = Duration::from_secs(3);
 

@@ -1,4 +1,4 @@
-//! Small helpers shared by every module: paths, JSON values with Python-like truthiness,
+//! Small helpers shared by every module: paths, loosely-typed JSON values (empty = false),
 //! atomic JSON writes and running a command with a timeout.
 
 use std::io::{Read, Write};
@@ -212,7 +212,7 @@ pub fn read_lossy(path: &str) -> std::io::Result<String> {
     std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-// ---- values with Python semantics ------------------------------------------------------------
+// ---- loosely-typed values (hand-written YAML may say 3, "3" or true) ------------------------------------------------------------
 
 pub fn truthy(v: &Value) -> bool {
     match v {
@@ -229,7 +229,7 @@ pub fn opt_truthy(v: Option<&Value>) -> bool {
     v.map(truthy).unwrap_or(false)
 }
 
-/// str(value), the way Python would print it.
+/// A value as display text: strings as they are, numbers in plain form, None / True / False for the rest.
 pub fn py_str(v: &Value) -> String {
     match v {
         Value::Null => "None".into(),
@@ -254,7 +254,7 @@ pub fn s(o: &Value, key: &str) -> String {
     s_or(o, key, "")
 }
 
-/// int(value), the way Python would convert it.
+/// A value as a whole number: numbers (cut toward zero), digit strings and booleans.
 pub fn py_int(v: &Value) -> Res<i64> {
     match v {
         Value::Bool(b) => Ok(*b as i64),
@@ -293,7 +293,7 @@ pub fn str_list(o: &Value, key: &str) -> Vec<String> {
     arr(o, key).iter().map(py_str).collect()
 }
 
-/// A required key in a request body, failing with the same message as a Python KeyError.
+/// A required key in a request body; the error names the missing key in quotes.
 pub fn req<'a>(body: &'a Value, key: &str) -> Res<&'a Value> {
     body.get(key).ok_or_else(|| format!("'{key}'"))
 }

@@ -8,7 +8,7 @@ license = "MIT"
 authors = ["Gobinath Manokaran"]
 repository = "https://github.com/gobi12b/claude-agent-graph"
 readme = "README.md"
-include = ["src/**", "agent_graph/index.html", "agent_graph/assets/*", "agent_graph/defaults/*.yaml", "README.md", "LICENSE"]
+include = ["src/**", "ui/index.html", "assets/*", "defaults/*.yaml", "README.md", "LICENSE"]
 
 [[bin]]
 name = "agent-graph"

@@ -1,0 +1,2 @@
+[console_scripts]
+agent-graph = agent_graph.app:main

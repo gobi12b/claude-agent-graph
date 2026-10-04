@@ -76,7 +76,7 @@ The app is now organised around its entities. Each one has its own page, a one-l
 
 **Visual refresh:** a left navigation rail, an accent colour and icon for each entity, new design tokens for light and dark, softer cards and shadows, an Inter or system font stack, and plain-language text areas (only commands use monospace). The rail collapses to icons below 900 px.
 
-**Backend** (`wfstore.py`, `agent_graph.py`): added `/api/agents/delete`, `/api/steps/save` and `/api/steps/delete`, plus renaming via `oldName` on `/api/agents/save`. Helpers and templates now carry `source` (builtin/user) and `overrides`. Built-ins are never modified; your versions go to `~/.config/claude-agent-graph/{agents,steps}.yaml`. Originals are saved as `*.bak-before-ux`.
+**Backend**: added `/api/agents/delete`, `/api/steps/save` and `/api/steps/delete`, plus renaming via `oldName` on `/api/agents/save`. Helpers and templates now carry `source` (builtin/user) and `overrides`. Built-ins are never modified; your versions go to `~/.config/claude-agent-graph/{agents,steps}.yaml`. Originals are saved as `*.bak-before-ux`.
 
 **Verified:** every page and editor was rendered with live data and an error banner injected, with no JS errors. Creating a helper, customizing a built-in template and creating a template were tested end to end against a sandboxed home folder.
 

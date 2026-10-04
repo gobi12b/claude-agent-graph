@@ -111,7 +111,7 @@ fn dur(sec: f64) -> String {
     }
 }
 
-/// Print a message and exit with code 1 (like Python's sys.exit("message")).
+/// Print a message and exit with code 1.
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("{msg}");
     std::process::exit(1)

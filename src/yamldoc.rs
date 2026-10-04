@@ -427,7 +427,7 @@ fn child(path: &Option<DocPath>, seg: Seg) -> Option<DocPath> {
     })
 }
 
-/// Python's `old == new` for values that are left untouched (a bool never equals a number).
+/// Whether a value is unchanged: 3 equals 3.0, but a bool never equals a number.
 fn same(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),

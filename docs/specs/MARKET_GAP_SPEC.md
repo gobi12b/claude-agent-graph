@@ -12,7 +12,7 @@ Claude Agent Graph is a local app for watching Claude Code and running multi-ste
 3. Lists the gaps that come up most often, ranked (section 4).
 4. Specifies each gap so it can be built (section 5) and proposes an order (section 6).
 
-All specs apply to **both** implementations: the Python app (`agent_graph/`) and the Rust port (`src/`, branch `rust-rewrite`). Python stays the reference implementation, and every YAML key added here must parse the same way in both.
+All specs apply to the app in `src/`. Every YAML key added here must also be accepted by `agent-graph validate`.
 
 ## 2. Competitive landscape
 
@@ -159,7 +159,7 @@ container:                 # only for isolation: container
 - `worktree`: at run start, `git worktree add <runs>/<run-id>/wt <base> --detach`. All steps run there. Untracked files the user lists in `worktree.copy:` (for example `.env`) are copied in.
 - If the project isn't a git repo, `worktree` fails validation with a clear message ("This folder isn't a git repository, so it can't run in a separate copy").
 - Parallel steps inside a run still share the run's worktree. Optional `step.isolation: worktree` gives one step its own child worktree, merged back with `git merge --no-ff` after it succeeds. A merge conflict fails the step, and the reason lists the conflicting files.
-- Checkpoints (`quality.py` / `quality.rs`) take snapshots from the worktree. Rewind acts on the worktree. Per-step diffs become exact, because nothing else writes there.
+- Checkpoints (`quality.rs`) take snapshots from the worktree. Rewind acts on the worktree. Per-step diffs become exact, because nothing else writes there.
 - The watcher maps a worktree path back to its project so sessions stay grouped under the right project in the live graph.
 - At the end of the run, the run view shows **Apply to my folder** (cherry-pick the run's net diff onto the user's working tree, which must be clean or the action refuses), **Create branch** (see G5) and **Discard**.
 - `container`: steps run as `docker run` (or `podman`) with the worktree mounted at `/work`, and the Claude CLI and auth are mounted read-only. This is a phase-2 option; ship worktree first.
@@ -453,7 +453,7 @@ An **Insights** page built from run files only (no new storage): cost per workfl
 
 Ordering rationale: the releases follow the value ranking in 4.1. G2 is small and removes the most friction. G1 is a precondition for G4, G5, G8 and G10, because unattended and parallel runs aren't safe in a shared folder. G5 and G7 make the first release story whole. G6 ships before or with G4, because triggered runs happen when nobody is watching.
 
-Each release must keep the Python and Rust implementations in parity, enforced by a shared fixture set of workflow YAML files with expected `validate` output and stubbed-run traces that both test suites load.
+Each release adds to a fixture set of workflow YAML files with expected `validate` output and stubbed-run traces that the test suite loads.
 
 ## 7. Success metrics
 

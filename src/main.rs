@@ -80,7 +80,12 @@ fn open_window(url: &str) -> Result<(), String> {
     use tao::event_loop::{ControlFlow, EventLoop};
     use tao::window::{Icon, WindowBuilder};
 
-    let event_loop = EventLoop::new();
+    // With no display at all (SSH, a server) tao panics instead of failing: treat that as "no window here".
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let made = std::panic::catch_unwind(EventLoop::new);
+    std::panic::set_hook(quiet);
+    let event_loop = made.map_err(|_| "no display to open a window on".to_string())?;
     let mut builder = WindowBuilder::new().with_title("Claude Agent Graph").with_inner_size(tao::dpi::LogicalSize::new(1400.0, 900.0));
     if let Some(icon) = decode_icon(server::ICON_PNG).and_then(|(rgba, w, h)| Icon::from_rgba(rgba, w, h).ok()) {
         builder = builder.with_window_icon(Some(icon));

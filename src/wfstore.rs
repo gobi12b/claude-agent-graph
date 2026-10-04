@@ -83,9 +83,9 @@ fn trash_dir() -> String {
 // ---- the built-in defaults (shipped inside the binary) ----------------------------------------
 
 const BUILTIN: [(&str, &str); 3] = [
-    ("agents.yaml", include_str!("../agent_graph/defaults/agents.yaml")),
-    ("steps.yaml", include_str!("../agent_graph/defaults/steps.yaml")),
-    ("samples.yaml", include_str!("../agent_graph/defaults/samples.yaml")),
+    ("agents.yaml", include_str!("../defaults/agents.yaml")),
+    ("steps.yaml", include_str!("../defaults/steps.yaml")),
+    ("samples.yaml", include_str!("../defaults/samples.yaml")),
 ];
 
 /// The folder with the built-in agents.yaml / steps.yaml / samples.yaml. They are real files so they can be
@@ -107,7 +107,7 @@ pub fn defaults_dir() -> String {
                 }
             }
         }
-        let source = concat!(env!("CARGO_MANIFEST_DIR"), "/agent_graph/defaults");
+        let source = concat!(env!("CARGO_MANIFEST_DIR"), "/defaults");
         if has_all(source) {
             return source.to_string();
         }

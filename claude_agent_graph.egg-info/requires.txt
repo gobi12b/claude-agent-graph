@@ -1,0 +1,4 @@
+ruamel.yaml>=0.17
+
+[window]
+pywebview>=5

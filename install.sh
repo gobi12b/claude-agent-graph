@@ -1,58 +1,72 @@
 #!/bin/sh
 # Claude Agent Graph installer for macOS and Linux.
 #   curl -fsSL https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/install.sh | sh
-# Installs the `agent-graph` command with uv or pipx when available, otherwise into its own
-# virtual environment under ~/.local/share/claude-agent-graph.
+# Downloads the prebuilt `agent-graph` program for this computer into ~/.local/bin.
 set -eu
 
-REPO="${AGENT_GRAPH_REPO:-https://github.com/gobi12b/claude-agent-graph}"
-SRC="git+${REPO}"
-# macOS gets a native window from pywebview; Linux uses the system GTK bindings (python3-gi), so the
-# virtual environment is allowed to see system packages.
-case "$(uname -s)" in Darwin) EXTRA="[window]"; SYSPKG="" ;; *) EXTRA=""; SYSPKG="--system-site-packages" ;; esac
-[ -n "${AGENT_GRAPH_SRC:-}" ] && SRC="$AGENT_GRAPH_SRC"  # a local checkout, for testing
-BIN="$HOME/.local/bin"
+BASE="${AGENT_GRAPH_BASE:-https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main}"
+BIN="${AGENT_GRAPH_BIN:-$HOME/.local/bin}"
+DATA="$HOME/.local/share/claude-agent-graph"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-command -v git >/dev/null 2>&1 || die "git is required (macOS: xcode-select --install; Linux: install git)."
-if ! command -v claude >/dev/null 2>&1; then
-    say "Note: the claude CLI isn't on your PATH. Install Claude Code first: https://claude.com/claude-code"
-fi
+fetch() {  # fetch URL FILE
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
+    elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
+    else die "curl or wget is needed to download the app."
+    fi
+}
 
-if command -v uv >/dev/null 2>&1; then
-    say "Installing with uv"
-    uv tool install --force "claude-agent-graph${EXTRA} @ ${SRC}" || uv tool install --force "claude-agent-graph @ ${SRC}"
-elif command -v pipx >/dev/null 2>&1; then
-    say "Installing with pipx"
-    pipx install --force $SYSPKG "claude-agent-graph${EXTRA} @ ${SRC}" || pipx install --force $SYSPKG "claude-agent-graph @ ${SRC}"
-else
-    PY=""
-    for p in python3 python; do
-        if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then
-            PY="$p"; break
-        fi
-    done
-    [ -n "$PY" ] || die "Python 3.9+ is required. Install it from https://www.python.org/downloads/ (or brew install python)."
-    VENV="$HOME/.local/share/claude-agent-graph/venv"
-    say "Installing into $VENV"
-    "$PY" -m venv $SYSPKG "$VENV" || die "couldn't create a virtual environment (Debian/Ubuntu: sudo apt install python3-venv)."
-    "$VENV/bin/python" -m pip install --quiet --upgrade pip
-    "$VENV/bin/python" -m pip install --quiet --upgrade "claude-agent-graph${EXTRA} @ ${SRC}" \
-        || "$VENV/bin/python" -m pip install --quiet --upgrade "claude-agent-graph @ ${SRC}"
-    mkdir -p "$BIN"
-    ln -sf "$VENV/bin/agent-graph" "$BIN/agent-graph"
-fi
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+command -v git >/dev/null 2>&1 || say "Note: git isn't installed. Step diffs and rewind need it (macOS: xcode-select --install)."
+command -v claude >/dev/null 2>&1 || say "Note: the claude CLI isn't on your PATH. Install Claude Code first: https://claude.com/claude-code"
+
+OS="$(uname -s)"; ARCH="$(uname -m)"
+case "$OS/$ARCH" in
+    Darwin/*) CHOICES="agent-graph-macos-universal" ;;
+    Linux/x86_64|Linux/amd64)
+        # The native window needs WebKitGTK; without it, the app opens in your browser.
+        if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1\.so\.0'; then
+            CHOICES="agent-graph-linux-x86_64-window agent-graph-linux-x86_64"
+        else
+            CHOICES="agent-graph-linux-x86_64"
+        fi ;;
+    Linux/aarch64|Linux/arm64) CHOICES="agent-graph-linux-arm64" ;;
+    *) die "No prebuilt app for $OS/$ARCH yet. Build it from source: https://github.com/gobi12b/claude-agent-graph#build-from-source" ;;
+esac
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+fetch "$BASE/binaries/SHA256SUMS" "$TMP/SHA256SUMS" || die "couldn't download the checksums from $BASE/binaries/"
+mkdir -p "$BIN"
+INSTALLED=""
+for NAME in $CHOICES; do
+    say "Downloading $NAME"
+    fetch "$BASE/binaries/$NAME" "$TMP/$NAME" || die "couldn't download $BASE/binaries/$NAME"
+    WANT="$(grep " $NAME\$" "$TMP/SHA256SUMS" | cut -d' ' -f1)"
+    GOT="$(sha256 "$TMP/$NAME" || true)"
+    if [ -n "$GOT" ] && [ "$WANT" != "$GOT" ]; then die "$NAME doesn't match its checksum; try again later."; fi
+    chmod +x "$TMP/$NAME"
+    if "$TMP/$NAME" --version >/dev/null 2>&1; then  # runs here (system libraries are new enough)
+        mv "$TMP/$NAME" "$BIN/agent-graph"
+        INSTALLED="$NAME"
+        break
+    fi
+    say "$NAME doesn't run on this system; trying the next build."
+done
+[ -n "$INSTALLED" ] || die "None of the prebuilt apps run here. Build it from source: https://github.com/gobi12b/claude-agent-graph#build-from-source"
+say "Installed $("$BIN/agent-graph" --version) ($INSTALLED) to $BIN/agent-graph"
 
 # Linux: add an app-menu entry, with the app's icon.
-if [ "$(uname -s)" = "Linux" ] && [ -d "$HOME/.local/share" ]; then
-    mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/claude-agent-graph"
-    ICON="$HOME/.local/share/claude-agent-graph/icon.png"
-    ICON_URL="${AGENT_GRAPH_ICON_URL:-https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/agent_graph/assets/icon.png}"
-    if ! { curl -fsSL "$ICON_URL" -o "$ICON" 2>/dev/null || wget -qO "$ICON" "$ICON_URL" 2>/dev/null; }; then
-        rm -f "$ICON"; ICON="network-workgroup"  # offline: a stock icon
-    fi
+if [ "$OS" = "Linux" ] && [ -d "$HOME/.local/share" ]; then
+    mkdir -p "$HOME/.local/share/applications" "$DATA"
+    ICON="$DATA/icon.png"
+    fetch "$BASE/assets/icon.png" "$ICON" 2>/dev/null || { rm -f "$ICON"; ICON="network-workgroup"; }  # offline: a stock icon
     cat > "$HOME/.local/share/applications/claude-agent-graph.desktop" <<EOF
 [Desktop Entry]
 Type=Application

@@ -1,10 +1,30 @@
-<p align="center"><img src="assets/icon.png" width="112" alt="Claude Agent Graph icon"></p>
+Metadata-Version: 2.4
+Name: claude-agent-graph
+Version: 0.1.0
+Summary: A live graph of your Claude Code sessions and subagents, plus a visual workflow builder and runner.
+Author: Gobinath Manokaran
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/gobi12b/claude-agent-graph
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Environment :: Web Environment
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: ruamel.yaml>=0.17
+Provides-Extra: window
+Requires-Dist: pywebview>=5; extra == "window"
+Dynamic: license-file
+
+<p align="center"><img src="agent_graph/assets/icon.png" width="112" alt="Claude Agent Graph icon"></p>
 
 <h1 align="center">Claude Agent Graph</h1>
 
 A live, visual map of everything [Claude Code](https://claude.com/claude-code) is doing on your machine: your sessions, the helper agents (subagents) they start, and the messages between them. It also includes a drag-and-drop **workflow builder** that chains Claude steps and shell steps, with retries, checks, review pauses and loop-backs.
 
-One small program for **macOS, Linux and Windows**: nothing else to install besides Claude Code.
+Runs on **macOS, Linux and Windows**.
 
 ![A workflow run: each step's result, checked by the AI judge against its acceptance criteria](docs/screenshots/run-judge.png)
 
@@ -23,7 +43,7 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 
 ## Features
 
-- **Live graph** of Claude Code sessions and subagents, built by tailing the transcripts in `~/.claude`. By default it shows what's live: open sessions and running workflows. The filter bar at its top-right adds **Older** activity from a time range you pick.
+- **Live graph** of Claude Code sessions and subagents, built by tailing the transcripts in `~/.claude`
 - **Activity feed**: prompts, helper starts and hand-backs, files written or edited
 - **Stop a running session** from the graph
 - **Workflow builder**: steps run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible
@@ -33,7 +53,6 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 - **Token insight**: each step's input/output tokens, prompt-cache hit rate and turns
 - **Steering**: send Claude guidance while a step runs (it continues the same conversation with your message), or redo a finished step with your feedback
 - **Sample workflows**: ready-made workflows (fix a bug, build a feature, explain a project, security check, …) to start from
-- **Run inputs, a separate copy of the project per run, and delivery as a branch or pull request**: see [Inputs, separate copies and branches](#inputs-separate-copies-and-branches)
 - **Command line**: list, run and validate workflows from the terminal, by name or straight from a workflow YAML file (`agent-graph run flow.yaml`, `agent-graph validate flows/*.yaml`), handy for scripts and CI
 - **Other AI models**: run a workflow, or a single step, on Google Gemini, OpenAI GPT, or a free local model through Ollama, alongside Claude
 - **Agent library**: ready-made subagent roles (product owner, architect, reviewer, tester, …) you can drop into steps
@@ -42,10 +61,89 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 
 ## Requirements
 
+Every platform needs these three things:
+
 | | |
 |---|---|
-| **Claude Code** | The `claude` CLI on your `PATH`, signed in: install it from [claude.com/claude-code](https://claude.com/claude-code), then run `claude` once and log in. |
-| **git** | Step diffs and rewind use it. On Windows, [Git for Windows](https://git-scm.com/download/win) also provides the bash that shell steps run in (Claude Code needs it too). |
+| **Claude Code** | The `claude` CLI on your `PATH`, signed in (run `claude` once and log in). |
+| **Python** | 3.9 or newer |
+| **git** | Used by the installer. On Windows, Git for Windows also supplies the bash that shell steps use. |
+
+Check what you already have:
+
+```sh
+claude --version
+python3 --version   # Windows: py --version
+git --version
+```
+
+## Prerequisites by platform
+
+### macOS
+
+1. **Command Line Tools.** These provide `git` and a `python3` (3.9):
+   ```sh
+   xcode-select --install
+   ```
+   If you'd rather have a newer Python, run `brew install python` ([Homebrew](https://brew.sh)).
+2. **Claude Code:**
+   ```sh
+   curl -fsSL https://claude.ai/install.sh | bash
+   claude   # sign in once
+   ```
+3. *Optional:* `brew install uv` (or `brew install pipx`) for a cleaner install and easy upgrades.
+
+The native window (pywebview) is installed automatically and uses the WebKit built into macOS. Nothing else is needed.
+
+### Linux
+
+1. **Python, venv and git.** Some distros split `venv` into its own package, so install it explicitly:
+
+   | Distro | Command |
+   |---|---|
+   | Debian / Ubuntu / Mint | `sudo apt install python3 python3-venv python3-pip git` |
+   | Fedora | `sudo dnf install python3 python3-pip git` |
+   | Arch | `sudo pacman -S python python-pip git` |
+   | openSUSE | `sudo zypper install python3 python3-pip git` |
+
+2. **Claude Code:**
+   ```sh
+   curl -fsSL https://claude.ai/install.sh | bash
+   claude   # sign in once
+   ```
+3. *Optional, for a native window* instead of a browser tab:
+
+   | Distro | Command |
+   |---|---|
+   | Debian / Ubuntu / Mint | `sudo apt install python3-gi gir1.2-webkit2-4.1` |
+   | Fedora | `sudo dnf install python3-gobject webkit2gtk4.1` |
+   | Arch | `sudo pacman -S python-gobject webkit2gtk-4.1` |
+
+4. *Optional, for desktop notifications:* `notify-send` (Debian/Ubuntu: `sudo apt install libnotify-bin`; most desktops already have it).
+5. *Optional, for file opening:* `xdg-utils`, which most desktops already include.
+6. *Optional:* [uv](https://docs.astral.sh/uv/) or `pipx` (`sudo apt install pipx`).
+
+### Windows 10 / 11
+
+1. **Git for Windows.** Claude Code needs it too, and its Git Bash runs the workflows' shell steps:
+   ```powershell
+   winget install --id Git.Git -e
+   ```
+   You can also download it from [git-scm.com](https://git-scm.com/download/win).
+2. **Python 3.9+:**
+   ```powershell
+   winget install --id Python.Python.3.12 -e
+   ```
+   You can also use the [python.org installer](https://www.python.org/downloads/); in that case, tick **"Add python.exe to PATH"**.
+3. **Claude Code** (in PowerShell):
+   ```powershell
+   irm https://claude.ai/install.ps1 | iex
+   claude   # sign in once
+   ```
+4. **Open a new terminal** after installing, so the updated `PATH` is picked up.
+5. *Optional:* `winget install --id astral-sh.uv -e` for a cleaner install and easy upgrades.
+
+The native window uses the Microsoft Edge **WebView2** runtime, which comes preinstalled on Windows 10 and 11. Without it, the app opens in your browser.
 
 ## Install
 
@@ -61,41 +159,44 @@ curl -fsSL https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/ins
 irm https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/install.ps1 | iex
 ```
 
-The installer downloads the right program for your computer from [`binaries/`](binaries/) and checks it against `binaries/SHA256SUMS`. Then it:
+The installer uses [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) when either is installed. Otherwise it creates a private virtual environment (`~/.local/share/claude-agent-graph` or `%LOCALAPPDATA%\claude-agent-graph`). It also adds an app-menu entry on Linux and a Start-menu shortcut on Windows.
 
-- **macOS / Linux:** puts it at `~/.local/bin/agent-graph` and, on Linux, adds an app-menu entry with the icon.
-- **Windows:** puts it at `%LOCALAPPDATA%\Programs\claude-agent-graph\agent-graph.exe`, adds that folder to your `PATH`, and adds a Start-menu shortcut. Open a new terminal afterwards so the `PATH` change is picked up.
+### Manual install (any OS)
 
-### Or download it yourself
+With uv or pipx:
 
-| Computer | File | Notes |
-|---|---|---|
-| Linux, x86_64 | [`agent-graph-linux-x86_64-window`](binaries/agent-graph-linux-x86_64-window) | Native window. Needs WebKitGTK (`sudo apt install libwebkit2gtk-4.1-0` on Debian/Ubuntu, `sudo dnf install webkit2gtk4.1` on Fedora) and glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer). |
-| Linux, x86_64 | [`agent-graph-linux-x86_64`](binaries/agent-graph-linux-x86_64) | Opens in your browser. Runs on any distro with glibc 2.28+ (2018 or newer). |
-| Linux, ARM64 | [`agent-graph-linux-arm64`](binaries/agent-graph-linux-arm64) | Opens in your browser. glibc 2.28+. |
-| macOS (Apple Silicon and Intel) | [`agent-graph-macos-universal`](binaries/agent-graph-macos-universal) | Opens in your browser. |
-| Windows 10 / 11 (x64, and ARM through emulation) | [`agent-graph-windows-x86_64.exe`](binaries/agent-graph-windows-x86_64.exe) | Native window (Edge WebView2, preinstalled on Windows 10 and 11). |
+```sh
+uv tool install git+https://github.com/gobi12b/claude-agent-graph
+# or
+pipx install git+https://github.com/gobi12b/claude-agent-graph
+```
 
-Rename it to `agent-graph` (`agent-graph.exe` on Windows) and put it somewhere on your `PATH`. On macOS and Linux, make it executable first: `chmod +x agent-graph`. On macOS, a file downloaded in a browser is quarantined, so clear it once: `xattr -d com.apple.quarantine agent-graph`. The installer's download doesn't need this.
+From a clone, without installing:
+
+```sh
+git clone https://github.com/gobi12b/claude-agent-graph
+cd claude-agent-graph
+python -m pip install ruamel.yaml
+python -m agent_graph
+```
 
 ## Run
 
 ```sh
-agent-graph              # opens a native window if this build has one, otherwise your browser
+agent-graph              # opens a native window if one is available, otherwise your browser
 agent-graph --browser    # always use the browser (serves on http://127.0.0.1:8765)
 agent-graph --port 9000  # pick the port
-agent-graph --version
 ```
 
 The server listens only on `127.0.0.1`, and every API call needs a random token issued at startup, so other websites can't reach it.
 
 ### Native window vs. browser
 
-| OS | Window | Notes |
+| OS | Window | How |
 |---|---|---|
-| Linux | WebKitGTK | In the `-window` build. If it can't open a window (for example over SSH), it falls back to the browser. |
-| Windows | Edge WebView2 | In the Windows build. |
-| macOS | WKWebView (built in) | The prebuilt file opens in the browser. For a window, [build from source](#build-from-source) on a Mac with `--features window`. |
+| Linux | GTK WebKit | Uses the system GTK packages when present: `sudo apt install python3-gi gir1.2-webkit2-4.1` (Debian/Ubuntu) or `sudo dnf install python3-gobject webkit2gtk4.1` (Fedora). The installer's venv/pipx installs can see these system packages. |
+| macOS | pywebview | The installer adds it automatically. |
+| Windows | pywebview (Edge WebView2) | The installer tries to add it. If that fails (some new Python versions lack wheels), the app opens in your browser instead. |
 
 Without a native window, the app opens in your default browser and works the same way.
 
@@ -111,8 +212,6 @@ agent-graph run ./flows/nightly.yaml -C ~/code/app   # ...in another project fol
 agent-graph run fix-a-bug --yes                   # approve review points automatically (scripts, CI)
 agent-graph validate ./flows/*.yaml               # check workflow files without running them
 agent-graph runs                                  # recent runs: id, when, status, duration, cost
-agent-graph run "Fix a bug" --input bug="Login fails on Safari"   # give the workflow's inputs
-agent-graph clean                                 # remove the separate copies of finished runs
 ```
 
 | Option | For |
@@ -120,9 +219,6 @@ agent-graph clean                                 # remove the separate copies o
 | `run <workflow>` | A workflow file (anything ending in `.yaml`/`.yml`, or a path), or the id, exact name or start of the name of a workflow the app knows (not case-sensitive). If several match, it lists them so you can use the id. |
 | `-C`, `--folder <dir>` | Run (or validate) in this project folder instead of the workflow's `cwd`. Handy for keeping one workflow file and running it on many projects. |
 | `-y`, `--yes` | Approve every review point without asking. |
-| `-i`, `--input NAME=VALUE` | a value for one of the workflow's inputs. Repeat it for more. |
-| `--inputs <file.json>` | input values from a JSON file (`--input` wins over it). |
-| `--isolation worktree\|none` | run in a separate copy of the project, or in the folder itself, whatever the workflow says. |
 | `-q`, `--quiet` | Don't print the final step's result at the end. |
 | `--json` | Print a JSON summary (status, cost, each step's output) instead of progress. Also works with `list` and `runs`. |
 | `runs -n 30` | How many recent runs to list (default 15). |
@@ -159,7 +255,7 @@ Which folder it runs in:
 2. Otherwise `cwd:` in the file. A relative `cwd` (such as `cwd: ..`) is relative to the file, not to where you run the command.
 3. Otherwise the project the file belongs to, if it's inside `<project>/.claude/workflows/`; else the file's own folder.
 
-The other settings are the ones the builder writes (open any workflow with **Open as text** to see them all): `model`, `permissionMode`, `allowedTools`, `disallowedTools`, `passOutput`, `maxBudgetUsd`, `judgeModel`, `agents`, and per step `prompt` or `run` (with `timeout` in seconds for `run`), `retries`, `check`, `judge`, `model`, `review`, `agents`, `dependsOn`, `onSuccess`, `onFailure` and `loopBack`. Steps run one after another unless `dependsOn` says otherwise. Replaying a step of a file run from the app reads the file again.
+The other settings are the ones the builder writes (open any workflow with **Open as text** to see them all): `model`, `permissionMode`, `allowedTools`, `disallowedTools`, `passOutput`, `maxBudgetUsd`, `agents`, and per step `prompt` or `run`, `retries`, `check`, `model`, `review`, `agents`, `dependsOn`, `onSuccess`, `onFailure` and `loopBack`. Steps run one after another unless `dependsOn` says otherwise. Replaying a step of a file run from the app reads the file again.
 
 ### Check workflows: `validate`
 
@@ -201,7 +297,7 @@ agent-graph validate .claude/workflows/*.yaml --strict
 | Code | Meaning |
 |---|---|
 | `0` | Finished successfully |
-| `1` | A step failed, the workflow wasn't found, a required input is missing, or the branch or pull request couldn't be made |
+| `1` | A step failed, or the workflow wasn't found |
 | `2` | Stopped (`Ctrl+C`, Stop in the app, or `s` at a review) |
 | `3` | Paused for review, but there was no terminal to answer it (use `--yes`) |
 
@@ -210,30 +306,6 @@ Example: run a workflow every night with cron, and keep the log:
 ```sh
 0 2 * * *  cd ~/code/my-app && agent-graph run "Review & tidy up code" --yes >> ~/agent-graph-nightly.log 2>&1
 ```
-
-## Inputs, separate copies and branches
-
-Three workflow settings make runs repeatable and safe to leave unattended:
-
-```yaml
-name: Fix a bug
-inputs:
-  bug: What's going wrong?                 # shorthand: a required text input
-  severity: {type: choice, options: [low, high], default: low}
-isolation: worktree                        # run in a separate git worktree
-worktree: {copy: [.env], setup: npm ci, keep: onFailure}
-deliver:                                   # the run's changes as a branch, one commit per step
-  branch: "fix/{{ inputs.bug | slug }}"
-  pr: {draft: true}                        # push it and open a pull request (needs gh)
-steps:
-  - name: Fix it
-    prompt: "Fix this bug: {{ inputs.bug }} (severity {{ inputs.severity }})"
-    check: npm test
-```
-
-- **Inputs.** **▶ Run** asks for them in a form (filled in with the last values you used). In the terminal, pass `--input bug="Login fails on Safari"` (repeat it for more inputs) or `--inputs values.json`. If a required input is missing, the terminal asks for it, or exits with code `1` when there's no one to ask. Templates can use `{{ inputs.<name> }}`, `{{ steps.<id>.output }}`, `{{ run.id }}`, `{{ run.folder }}` and `{{ run.project }}`, with the filters `default("…")`, `slug`, `trim` and `json`. In `run:` commands and `check:`s each value is quoted for the shell, and shell steps also get each input as `$INPUT_<NAME>`.
-- **Separate copy (`isolation: worktree`).** The run works in its own git worktree in `~/.config/claude-agent-graph/worktrees/`, starting from `base` (default `HEAD`). Your folder and other runs aren't touched, and each step's diff is exactly its own. Uncommitted changes in your folder aren't included; list files the run needs, such as `.env`, under `copy`. `keep` says when to delete the copy: `always` keeps it, `onFailure` (the default) keeps it only when the run fails, `never` always deletes it. Its changes stay available after it's deleted. In the run view you can **Apply to my folder** (undoable; nothing is applied unless all of it applies cleanly), **Create branch**, **Open pull request** or **Discard copy**. `agent-graph run … --isolation worktree` turns it on for one run, and `agent-graph clean` removes the copies of finished runs.
-- **Branches (`deliver`).** Builds commits from the step checkpoints on top of the base commit, without touching your checkout. The commits hold only the run's changes: files copied in, or made by `setup`, never get committed. `commit: squash` makes a single commit. `when: always` also delivers failed runs. `push: true` pushes the branch, and `pr` pushes it and opens a pull request whose description lists each step, its AI judge score and the cost. Replaying steps and delivering again moves the same branch and keeps its pull request. If you have no git identity set, commits are made as "Claude Agent Graph".
 
 ## AI models: Claude, Gemini, GPT and local models
 
@@ -297,7 +369,7 @@ Each Claude step's **Result** tab shows the tokens it read and wrote, its number
 - **Shell steps** (`run:`) and **checks** (`check:`) run with `bash -lc` in the workflow folder: bash on macOS/Linux, Git Bash on Windows (found via `CLAUDE_CODE_GIT_BASH_PATH`, `git`, or the default install paths). If there's no bash on Windows, they fall back to `cmd.exe`.
 - **Opening files** uses `xdg-open` on Linux, `open` on macOS and the default app association on Windows. If an IDE is installed (VS Code, Cursor, Windsurf, JetBrains IDEs, Zed or Sublime Text), its CLI is used instead.
 - **Notifications** (e.g. "a step is waiting for your review") use `notify-send` on Linux, Notification Center on macOS and a tray balloon on Windows.
-- **Folder picker** (when choosing a project folder) uses `zenity` or `kdialog` on Linux; otherwise you type the path.
+- On **Windows**, the app restarts itself in Python's UTF-8 mode, because transcripts and YAML files are UTF-8.
 
 ## Where things live
 
@@ -307,109 +379,45 @@ Each Claude step's **Result** tab shows the tokens it read and wrote, its number
 | Your workflows | `<project>/.claude/workflows/<id>.yaml` |
 | Your agent and step additions | `~/.config/claude-agent-graph/agents.yaml`, `steps.yaml` |
 | Run history and logs | `~/.config/claude-agent-graph/runs/` |
-| Separate copies of runs (`isolation: worktree`) | `~/.config/claude-agent-graph/worktrees/` (remove finished ones with `agent-graph clean`) |
-| App settings (chosen IDE, extra model names, known projects) | `~/.config/claude-agent-graph/settings.json` |
-| Built-in agent library, step templates and sample workflows | Inside the program. A copy is written to `~/.config/claude-agent-graph/builtin/` so you can open it in your editor; it's refreshed when you update. When you run from a clone, `defaults/` in the clone is used instead. Set `AGENT_GRAPH_DEFAULTS` to use another folder. |
+| Built-in agent library, step templates and sample workflows | `agent_graph/defaults/` (`agents.yaml`, `steps.yaml`, `samples.yaml`) |
 
 On Windows, `~` means your user folder (`C:\Users\<you>`).
 
 ## Update / uninstall
 
-To update, run the installer again.
-
-To uninstall:
-
 ```sh
-# macOS / Linux
-rm -f ~/.local/bin/agent-graph ~/.local/share/applications/claude-agent-graph.desktop
-rm -rf ~/.local/share/claude-agent-graph
+# update: run the installer again, or
+uv tool upgrade claude-agent-graph        # or: pipx upgrade claude-agent-graph
+
+# uninstall
+uv tool uninstall claude-agent-graph      # or: pipx uninstall claude-agent-graph
+rm -rf ~/.local/share/claude-agent-graph ~/.local/bin/agent-graph   # if the installer used its own venv
 ```
 
-```powershell
-# Windows
-Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\claude-agent-graph"
-Remove-Item "$([Environment]::GetFolderPath('Programs'))\Claude Agent Graph.lnk"
-```
-
-Your settings and run history stay in `~/.config/claude-agent-graph` until you delete that folder.
-
-## Build from source
-
-You need the [Rust toolchain](https://rustup.rs) (1.89 or newer) and a C linker:
-
-| OS | Install Rust | Linker |
-|---|---|---|
-| macOS | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | `xcode-select --install` |
-| Linux | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | Debian/Ubuntu: `sudo apt install build-essential`; Fedora: `sudo dnf install gcc`; Arch: `sudo pacman -S base-devel` |
-| Windows | `winget install --id Rustlang.Rustup -e` | Visual Studio Build Tools, "Desktop development with C++" workload (rustup offers to install it) |
-
-Then:
-
-```sh
-git clone https://github.com/gobi12b/claude-agent-graph
-cd claude-agent-graph
-cargo install --path .                    # browser build, installed to ~/.cargo/bin
-cargo install --path . --features window  # with the native window
-```
-
-Or install straight from GitHub: `cargo install --git https://github.com/gobi12b/claude-agent-graph --features window`.
-
-The native window needs these to **build**:
-
-| OS | Install first |
-|---|---|
-| Linux | Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev`; Fedora: `sudo dnf install webkit2gtk4.1-devel`; Arch: `sudo pacman -S webkit2gtk-4.1` |
-| macOS | Nothing beyond Xcode's Command Line Tools |
-| Windows | Nothing |
-
-### Rebuilding the files in `binaries/`
-
-Everything except the Linux window build is cross-compiled from one Linux machine with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild). It uses [zig](https://ziglang.org) as the linker, so no other toolchains or SDKs are needed:
-
-```sh
-cargo install cargo-zigbuild    # and install zig: https://ziglang.org/download (or your package manager)
-rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin
-
-cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.28            # → agent-graph-linux-x86_64
-cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28           # → agent-graph-linux-arm64
-cargo zigbuild --release --target x86_64-pc-windows-gnu --features window  # → agent-graph-windows-x86_64.exe
-cargo zigbuild --release --target universal2-apple-darwin                  # → agent-graph-macos-universal
-cargo build    --release --features window                                 # → agent-graph-linux-x86_64-window (on Linux)
-
-cd binaries && sha256sum agent-graph-* > SHA256SUMS
-```
-
-The `.2.28` suffix links against glibc 2.28, so those builds run on older distros. The window build links the system WebKitGTK, so it needs at least the glibc of the machine that built it. A macOS build with the native window needs Apple's SDK, so build that one on a Mac.
+On Windows without uv/pipx, delete `%LOCALAPPDATA%\claude-agent-graph` and the Start-menu shortcut. Your settings and run history stay in `~/.config/claude-agent-graph` until you delete that folder.
 
 ## Development
 
 ```sh
-cargo run -- --browser     # the app
-cargo run -- list          # a terminal command
-cargo test
-cargo clippy
+git clone https://github.com/gobi12b/claude-agent-graph
+cd claude-agent-graph
+python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -e ".[window]"
+agent-graph --browser
 ```
 
+Layout:
+
 ```
-src/
-  main.rs       command line, window
-  server.rs     HTTP server, API routes, live event stream
-  watcher.rs    tails ~/.claude transcripts and builds the graph
-  workflows.rs  validation, lint, IDE integration, permissions editor
-  runner.rs     the workflow runner (steps, retries, reviews, steering, loop-backs)
-  wfstore.rs    workflow and defaults storage
-  yamldoc.rs    YAML that keeps your comments on save
-  quality.rs    step checkpoints (diff, rewind) and the AI judge
-  template.rs   run inputs and {{ … }} templates
-  worktree.rs   separate copies of runs, apply, branches and pull requests
-  providers.rs  Claude, Gemini, GPT and Ollama
-  compat.rs     the Linux / macOS / Windows differences
-  cli.rs        list / run / validate / runs / clean
-  util.rs       paths, JSON helpers, running commands
-ui/index.html   the whole UI (single file, no build step), compiled into the program
-assets/         icons
-defaults/       built-in agent library, step templates and sample workflows
-binaries/       prebuilt programs for each OS, and their checksums
+agent_graph/
+  app.py        HTTP server, API routes, window
+  watcher.py    tails ~/.claude transcripts and builds the graph
+  workflows.py  workflow runner, IDE integration, permissions editor
+  wfstore.py    YAML storage that keeps your comments on save
+  quality.py    step checkpoints (diff, rewind) and the AI judge
+  compat.py     the Linux / macOS / Windows differences
+  index.html    the whole UI (single file, no build step)
+  defaults/     built-in agent library and step templates
 ```
 
 ## License
