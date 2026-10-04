@@ -71,26 +71,57 @@ New features must not weaken these. In particular, isolation (G1) has to keep di
 
 Scored on how often the gap comes up in reviews and competitor comparisons (demand), how much it limits current users (pain), and effort (S ≤ 1 week, M 1–3 weeks, L > 3 weeks, for one engineer on both implementations).
 
-| ID | Gap | Demand | Pain | Effort | Priority |
-|---|---|---|---|---|---|
-| G1 | Isolated workspace per run (git worktree, optional container) | High | High: parallel steps and runs share one folder | M | **P0** |
-| G2 | Workflow inputs and templating | High | High: every run of "Fix a bug" means editing the prompt | S | **P0** |
-| G3 | Structured outputs and conditional routing | High | Medium | M | **P0** |
-| G4 | Triggers: schedule, file watch, webhook, GitHub | High | Medium | M | **P0** |
-| G5 | Git delivery: branch, commit, pull request | High | Medium | S | **P1** |
-| G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | **P1** |
-| G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | **P1** |
-| G8 | Fan-out over a list (`forEach`) | Medium | Medium | M | **P1** |
-| G9 | Outbound notifications and remote approvals (Slack, Discord, webhook) | Medium | Medium | M | **P1** |
-| G10 | Eval suites: run a workflow over a dataset, compare to a baseline | Medium | Low today, high for teams | L | **P2** |
-| G11 | MCP: per-workflow servers, and Agent Graph as an MCP server | Medium | Low | M | **P2** |
-| G12 | Sub-workflows (call a workflow as a step) | Medium | Low | S | **P2** |
-| G13 | Generate a workflow from a description | Medium | Low (adoption) | S | **P2** |
-| G14 | Trace export via OpenTelemetry | Low–Medium | Low | S | **P2** |
-| G15 | Analytics: cost, pass rate and flaky steps over time | Low–Medium | Low | S | **P2** |
-| G16 | Import / share workflows from a URL or git repo | Low–Medium | Low | S | **P3** |
+| ID | Gap | Demand | Pain | Effort | Value rank | Priority |
+|---|---|---|---|---|---|---|
+| G1 | Isolated workspace per run (git worktree, optional container) | High | High: parallel steps and runs share one folder | M | 2 | **P0** |
+| G2 | Workflow inputs and templating | High | High: every run of "Fix a bug" means editing the prompt | S | 1 | **P0** |
+| G3 | Structured outputs and conditional routing | High | Medium | M | 8 | **P2** |
+| G4 | Triggers: schedule, file watch, webhook, GitHub | High | Medium | M | 6 | **P1** |
+| G5 | Git delivery: branch, commit, pull request | High | Medium | S | 3 | **P0** |
+| G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | 5 | **P1** |
+| G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | 4 | **P1** |
+| G8 | Fan-out over a list (`forEach`) | Medium | Medium | M | 12 | **P3** |
+| G9 | Outbound notifications and remote approvals (Slack, Discord, webhook) | Medium | Medium | M | 9 | **P2** |
+| G10 | Eval suites: run a workflow over a dataset, compare to a baseline | Medium | Low today, high for teams | L | 7 | **P1** |
+| G11 | MCP: per-workflow servers, and Agent Graph as an MCP server | Medium | Low | M | 11 | **P2** |
+| G12 | Sub-workflows (call a workflow as a step) | Medium | Low | S | 14 | **P3** |
+| G13 | Generate a workflow from a description | Medium | Low (adoption) | S | 10 | **P2** |
+| G14 | Trace export via OpenTelemetry | Low–Medium | Low | S | 15 | **P3** |
+| G15 | Analytics: cost, pass rate and flaky steps over time | Low–Medium | Low | S | 13 | **P3** |
+| G16 | Import / share workflows from a URL or git repo | Low–Medium | Low | S | 16 | **P3** |
+
+Priority follows the value ranking in 4.1: ranks 1–3 are P0, 4–7 P1, 8–11 P2 and 12–16 P3.
 
 **Not planned:** hosted cloud execution, multi-user accounts, and a hosted marketplace. They would conflict with "local-first, no account" and with the security model (localhost only, random token). G4's webhook listener and G9's remote approvals are opt-in and specified so the default stays local.
+
+### 4.1 Value ranking
+
+"Value" is user value for the effort: how many runs the feature improves, whether it builds the trust needed to run agents unattended, whether other features depend on it, and how much it sets us apart from competitors (not just catches up). This ranking sets the priorities above and the roadmap in section 6.
+
+| Rank | Feature | Value | Effort | Why it ranks here |
+|---|---|---|---|---|
+| 1 | **G2: Run-time inputs** | ★★★★★ | S | Every run of every workflow benefits right away: no more editing prompts before running. The cheapest big win, and triggers, evals and PR titles need it. |
+| 2 | **G1: Separate worktree per run** | ★★★★★ | M | The foundation. Without it, unattended, parallel or scheduled runs aren't safe. It also makes our step diffs exact, which strengthens the judge and rewind. |
+| 3 | **G5: Branch, commit, PR** | ★★★★★ | S (after G1) | Finishes the job: users get a PR, not a changed folder. Competitors put this front and centre, and it's small once G1 exists. |
+| 4 | **G7: Guardrails** | ★★★★☆ | M | Builds trust. People won't leave agents running overnight without spend caps and "don't touch `.env`". |
+| 5 | **G6: Resume after a crash** | ★★★★☆ | M | Long runs lost to a closed laptop or a crash are a sharp pain point, and unattended runs need this. |
+| 6 | **G4: Triggers** | ★★★★☆ | M | Turns the app from a tool you drive into automation that works without you, level with Archon and GitHub Agentic Workflows. It ranks below 1–5 because it's only safe once those exist. |
+| 7 | **G10: Eval suites and baseline comparison** | ★★★★☆ | L | Our strongest possible differentiator: the AI judge plus worktrees answers "is Haiku good enough for this workflow?" with real numbers. High value for teams, but expensive. |
+| 8 | **G3: Structured outputs and branching** | ★★★☆☆ | M | Powerful, but mostly for advanced users. Most coding workflows are straight lines with checks, which we already handle. |
+| 9 | **G9: Slack and webhook notifications** | ★★★☆☆ | M | Becomes important once triggers exist. On its own, desktop notifications cover a local user. |
+| 10 | **G13: Describe a workflow, get it built** | ★★★☆☆ | S | Cheap, and it helps new users get started (n8n and Agent Builder market this heavily). It doesn't help existing users much. |
+| 11 | **G11: Agent Graph as an MCP server** | ★★★☆☆ | M | "Claude, run my release workflow" from any chat, with the run showing in the live graph. A neat fit with our live-view strength. |
+| 12 | **G8: Run a step once per item in a list** | ★★☆☆☆ | M | Useful for batch work (tests for each file, triage each issue), but a niche. |
+| 13 | **G15: Cost and quality trends** | ★★☆☆☆ | S | Nice to have. The per-run numbers already cover most needs. |
+| 14 | **G12: Workflows that call other workflows** | ★★☆☆☆ | S | Matters only once users have many workflows. |
+| 15 | **G14: Trace export (OpenTelemetry)** | ★☆☆☆☆ | S | Only for teams that already run Langfuse, LangSmith or Grafana. |
+| 16 | **G16: Import workflows from a URL** | ★☆☆☆☆ | S | Copying a YAML file already works. |
+
+How this differs from ranking by demand alone:
+
+- **Guardrails (G7) and resume (G6) move up.** Trust and reliability decide whether anyone runs agents unattended, so they matter more than routing.
+- **Evals (G10) move up to #7.** No competitor combines an evidence-based judge with isolated runs, so this is where we can stand out instead of catching up.
+- **Branching (G3) moves down.** It's impressive in a demo, but fewer real coding workflows need it.
 
 ## 5. Specs
 
@@ -409,12 +440,12 @@ An **Insights** page built from run files only (no new storage): cost per workfl
 
 | Release | Contents | Theme |
 |---|---|---|
-| **0.next (6 weeks)** | G2 inputs · G1 worktree isolation · G5 delivery · G7 guardrails | Safe to run unattended and ends with a PR |
-| **+1 (6 weeks)** | G3 outputs and routing · G4 triggers · G6 durable runs · G9 notifications | Runs by itself, overnight, on events |
-| **+2 (8 weeks)** | G8 forEach · G10 evals · G13 describe-to-workflow · G15 insights | Scale and measure quality |
-| **Later** | G11 MCP · G12 sub-workflows · G14 OTel · G16 import · G1 containers | Fits into the wider tool chain |
+| **0.next (6 weeks)** | G2 inputs · G1 worktree isolation · G5 delivery · G7 guardrails | Start it with your inputs, walk away, come back to a safe, budget-capped PR |
+| **+1 (6 weeks)** | G6 durable runs · G4 triggers · G9 notifications · G13 describe-to-workflow | Runs by itself, overnight, on events |
+| **+2 (8 weeks)** | G10 evals · G3 outputs and routing · G11 MCP | Measure quality, handle advanced flows |
+| **Later** | G8 forEach · G15 insights · G12 sub-workflows · G14 OTel · G16 import · G1 containers | Scale and fit into the wider tool chain |
 
-Ordering rationale: G2 is small and removes the most friction. G1 is a precondition for G4, G5, G8 and G10, because unattended and parallel runs aren't safe in a shared folder. G5 and G7 make the first release story whole ("start it, walk away, review a PR").
+Ordering rationale: the releases follow the value ranking in 4.1. G2 is small and removes the most friction. G1 is a precondition for G4, G5, G8 and G10, because unattended and parallel runs aren't safe in a shared folder. G5 and G7 make the first release story whole. G6 ships before or with G4, because triggered runs happen when nobody is watching.
 
 Each release must keep the Python and Rust implementations in parity, enforced by a shared fixture set of workflow YAML files with expected `validate` output and stubbed-run traces that both test suites load.
 
