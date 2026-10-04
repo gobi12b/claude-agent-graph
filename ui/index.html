@@ -445,6 +445,22 @@
   .creview button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; }
   .card .creview { margin-left: 30px; }
   .block.reviewb { color: var(--message); border-color: color-mix(in srgb, var(--message) 50%, transparent); }
+  .block.gateb { color: var(--retry); border-style: dashed; border-color: color-mix(in srgb, var(--retry) 55%, transparent); }
+  .block.gateb.on { border-style: solid; border-color: var(--retry); }
+  .block.gatestep { color: var(--retry); border-color: color-mix(in srgb, var(--retry) 55%, transparent); font-weight: 600; }
+  .cgates { margin: 6px 0 0 30px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
+  .chip3 { color: var(--retry); border: 1px solid color-mix(in srgb, var(--retry) 50%, transparent); border-radius: 6px; padding: 2px 4px 2px 8px; display: inline-flex; gap: 4px; align-items: center; }
+  .chip3 button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; }
+  .dropgate { display: none; color: var(--retry); border: 1px dashed var(--retry); border-radius: 6px; padding: 2px 8px; }
+  #builder.draggate .dropgate { display: inline-block; }
+  .card.gatecard { border-left: 3px solid var(--retry); background: color-mix(in srgb, var(--retry) 5%, var(--panel)); }
+  .gatetag { color: var(--retry); font-weight: 600; font-size: 11px; }
+  .gatelist { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 10px; }
+  .gates { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--raise); font-size: 13px; }
+  .gates .gh { font-weight: 650; margin-bottom: 6px; }
+  .gates .gi { display: grid; grid-template-columns: 16px auto 1fr; gap: 6px; align-items: baseline; padding: 3px 0; }
+  .gates .gi small { grid-column: 2 / 4; color: var(--muted); white-space: pre-wrap; }
+  .gates .ok { color: var(--done); } .gates .no { color: var(--failed); } .gates .wait { color: var(--message); } .gates .skip { color: var(--muted); }
   .reviewtoggle { margin: 4px 0 12px; padding: 10px; border: 1px solid color-mix(in srgb, var(--message) 40%, transparent); border-radius: 8px; align-items: flex-start; }
   .reviewbox { border: 2px solid var(--message); border-radius: 12px; padding: 12px; margin-bottom: 14px; background: color-mix(in srgb, var(--message) 7%, var(--panel)); }
   .rbhead { font-weight: 700; color: var(--message); margin-bottom: 2px; }
@@ -1333,7 +1349,7 @@ function renderWorkflows() {
         <div class="ttlbox"><div class="ttl" title="${esc(w.name)}">${esc(w.name)}</div><div class="meta" title="${esc(w.file)}">📁 ${esc(folder)}</div></div>
         ${lr ? runTag(lr) : `<span class="tag">Never run</span>`}</div>
       <div class="flowline">${chips || `<span class="hint">No steps yet</span>`}</div>
-      <div class="meta">${w.steps.length} step${w.steps.length === 1 ? "" : "s"}${reviews ? ` · 👤 ${reviews} review point${reviews > 1 ? "s" : ""}` : ""}${w.agents?.length ? ` · ${w.agents.length} helper${w.agents.length > 1 ? "s" : ""}` : ""} · ${esc(word(MODE_WORD, w.permissionMode))}</div>
+      <div class="meta">${w.steps.length} step${w.steps.length === 1 ? "" : "s"}${reviews ? ` · 👤 ${reviews} review point${reviews > 1 ? "s" : ""}` : ""}${w.agents?.length ? ` · ${w.agents.length} helper${w.agents.length > 1 ? "s" : ""}` : ""}${w.gates?.length ? ` · ⛩ ${w.gates.length} gate${w.gates.length > 1 ? "s" : ""}` : ""} · ${esc(word(MODE_WORD, w.permissionMode))}</div>
       <div class="foot"><button class="btn pri" data-run="${esc(w.id)}">▶ Run</button>
         <button class="btn" data-edit="${esc(w.id)}">Edit</button>
         ${lr ? `<button class="btn" data-openrun="${esc(lr.id)}">Last run</button>` : ""}<span class="spacer"></span>
@@ -1431,18 +1447,29 @@ const AGENT_PRESETS_FALLBACK = {
                 prompt: "You are a researcher. Find the relevant code and documentation and return a concise summary with references." },
 };
 
-let draft = null, sel = null;  // sel: {type:"step", i} | {type:"agent", i} | null (workflow settings)
+let draft = null, sel = null;  // sel: {type:"step", i} | {type:"agent", i} | {type:"gate", i} | null (workflow settings)
 const uid = () => "new-" + Math.random().toString(36).slice(2, 7);  // the server gives it a readable id on save
 const newStep = (key = "blank") => {
-  const b = STEP_BLOCKS[key] || STEP_BLOCKS.blank || { name: "New step", prompt: "" };
+  const b = key === "__gate" ? STEP_GATE : STEP_BLOCKS[key] || STEP_BLOCKS.blank || { name: "New step", prompt: "" };
   return { id: uid(), name: b.name, prompt: b.prompt || "", retries: b.retries || 0, check: b.check || "", judge: b.judge || "", model: b.model || "",
            ...(b.run !== undefined || b.kind === "bash" ? { kind: "bash", run: b.run || "" } : {}),
-           onSuccess: "next", onFailure: "stop", agents: [...(b.agents || [])], review: !!b.review,
+           onSuccess: "next", onFailure: "stop", agents: [...(b.agents || [])], review: !!b.review, gates: [...(b.gates || [])],
+           ...(b.kind === "gate" ? { kind: "gate", prompt: "" } : {}),
            ...(b.loopBack ? { loopBack: { ...b.loopBack } } : {}) };
 };
 
 // ---- defaults: step templates and the agent library (defaults/*.yaml + your ~/.config files)
-let DEFAULTS = { categories: [], steps: {}, errors: [], files: {} }, libQuery = "";
+let DEFAULTS = { categories: [], steps: {}, gates: [], errors: [], files: {} }, libQuery = "";
+// a checkpoint between steps: does no work, checks what the steps before it did
+const STEP_GATE = { icon: "⛩", name: "Gate", kind: "gate", gates: [] };
+const libGate = name => (DEFAULTS.gates || []).find(g => g.name === name);
+function ensureGate(name, from) {  // copy a library (or sample) gate into the workflow (once)
+  if (draft.gates.some(g => g.name === name)) return true;
+  const L = from?.[name] || libGate(name); if (!L) return false;
+  draft.gates.push({ name, description: L.description || "", run: L.run || "", timeout: L.timeout || 600, judge: L.judge || "", approve: !!L.approve });
+  return true;
+}
+const gateChecks = g => [g.run && "⌨ command", g.judge && "⚖ AI judge", g.approve && "👤 your approval"].filter(Boolean).join(" · ") || "nothing to check yet";
 const libAgent = name => { for (const c of DEFAULTS.categories) { const a = c.agents.find(x => x.name === name); if (a) return a; } return AGENT_PRESETS_FALLBACK[name] && { name, ...AGENT_PRESETS_FALLBACK[name] }; };
 async function loadDefaults() {
   try {
@@ -1495,9 +1522,9 @@ function openEditor(wf, preset) {
   if (!wf && !preset) return openNewWorkflow();
   draft = wf ? structuredClone(wf) : { name: "", cwd: "~/Desktop/code", model: "haiku", permissionMode: "acceptEdits",
     allowedTools: [], disallowedTools: [], passOutput: true, maxBudgetUsd: "", agents: [], steps: [] };
-  draft.agents ||= [];
+  draft.agents ||= []; draft.gates ||= [];
   draft.steps.forEach((s, i) => {
-    s.agents ||= []; delete s.agentMode;
+    s.agents ||= []; s.gates ||= []; delete s.agentMode;
     const def = i > 0 ? [draft.steps[i - 1].id] : [];
     if (s.dependsOn && JSON.stringify(s.dependsOn) === JSON.stringify(def)) delete s.dependsOn;
     if (s.onFailure === "next") s.onFailure = "continue";
@@ -1519,7 +1546,11 @@ function openEditor(wf, preset) {
       const fill = t => String(t || "").replace(/\{task\}/g, preset.task || "<describe the task>").trim();
       draft.steps = preset.sample.steps.map(st => ({ id: uid(), name: st.name, prompt: fill(st.prompt), retries: +st.retries || 0,
         check: st.check || "", judge: st.judge || "", model: st.model || "", onSuccess: "next", onFailure: "stop", review: !!st.review,
-        agents: (st.agents || []).filter(ensureAgent), ...(st.run !== undefined ? { kind: "bash", run: fill(st.run) } : {}) }));
+        agents: (st.agents || []).filter(ensureAgent), gates: [].concat(st.gates || []).filter(g => ensureGate(g, preset.sample.gates)),
+        ...(st.gate !== undefined ? { kind: "gate", prompt: "", gates: [].concat(st.gate).filter(g => ensureGate(g, preset.sample.gates)) } : {}),
+        ...(st.loopBack ? { loopBack: { when: "failure", max: 3, ...st.loopBack } } : {}),
+        ...(st.run !== undefined ? { kind: "bash", run: fill(st.run) } : {}) }));
+      draft.steps.forEach(st => { if (st.loopBack) { const t = draft.steps.find(x => x.name === st.loopBack.to); st.loopBack.to = t ? t.id : st.id; } });
       if (preset.sample.model) { draft.model = preset.sample.model; document.getElementById("bmodel").value = draft.model; }
     }
   }
@@ -1549,7 +1580,7 @@ function syncBuilder() {
   if (wf.updated === draft.updated) return;
   const keepSel = sel;
   if (JSON.stringify(draft) === draftBase) {  // nothing unsaved here: just follow the file
-    openEditor(wf); sel = keepSel && (keepSel.type === "step" ? keepSel.i < draft.steps.length : keepSel.i < draft.agents.length) ? keepSel : null;
+    openEditor(wf); sel = keepSel && keepSel.i < (keepSel.type === "step" ? draft.steps : keepSel.type === "gate" ? draft.gates : draft.agents).length ? keepSel : null;
     renderBuilder();
     const sy = document.getElementById("bsynced"); sy.textContent = "⟳ updated from " + baseName(wf.file); sy.classList.add("flash");
     setTimeout(() => sy.classList.remove("flash"), 1500);
@@ -1584,6 +1615,17 @@ function renderPalette() {
       <button class="btn sm" style="margin-left:auto" data-openfile="steps" title="Edit step templates as a text file (defaults/steps.yaml)" aria-label="Open step templates file">&lt;/&gt;</button></div>
     <div class="hint">Click to add a step at the end, or drag it to a spot in the list.</div>
     ${Object.entries(STEP_BLOCKS).map(([k, b]) => `<div class="block" data-drag="step" data-key="${esc(k)}" title="${esc((b.prompt || "").slice(0, 200))}"><span>${esc(b.icon || "•")}</span>${esc(b.name)}</div>`).join("")}
+    <div class="sub">Gates</div>
+    <div class="hint">A gate checks the work before the workflow goes on: a command, an AI judge or your approval. Drop a gate onto a step it must pass, or add a gate step between steps.</div>
+    <div class="block gatestep" data-drag="step" data-key="__gate" title="A checkpoint between steps: it does no work, it checks everything the steps before it changed"><span>⛩</span>Gate step</div>
+    ${draft.gates.map((g, i) => `<div class="block gateb ${sel?.type === "gate" && sel.i === i ? "on" : ""}" data-drag="gate" data-name="${esc(g.name)}" data-gi="${i}" title="${esc(g.description || gateChecks(g))}"><span>⛩</span>${esc(g.name)}</div>`).join("")}
+    <div class="block gateb preset" data-drag="gate" data-gpreset="custom"><span>＋</span>Make my own gate</div>
+    <details class="libcat"><summary>Gate library <span class="hint">${(DEFAULTS.gates || []).length}</span>
+      <button class="btn sm" style="margin-left:6px" data-openfile="gates" title="View the built-in gates as a text file (defaults/gates.yaml)" aria-label="Open built-in gates file">&lt;/&gt;</button>
+      <button class="btn sm" data-openfile="userGates" title="Your saved gates (~/.config/claude-agent-graph/gates.yaml)" aria-label="Open my saved gates file">⭐</button></summary>
+      ${(DEFAULTS.gates || []).map(g => { const have = draft.gates.some(x => x.name === g.name);
+        return `<div class="block gateb preset libb ${have ? "have" : ""}" data-drag="gate" data-gpreset="${esc(g.name)}" title="${esc(gateChecks(g))}"><span>${have ? "✓" : "⛩"}</span><div class="lb"><div>${esc(g.name)}</div><small>${esc(g.description || gateChecks(g))}</small></div></div>`; }).join("")}
+    </details>
     <div class="sub">Review points</div>
     <div class="hint">Drag onto a step so the workflow pauses there for you to check the result.</div>
     <div class="block reviewb" data-drag="review"><span>👤</span>My review</div>
@@ -1625,16 +1667,20 @@ function renderLane() {
     const siblings = draft.steps.filter((x, k) => k !== i && JSON.stringify([...depsOf(x, k)].sort()) === JSON.stringify([...deps].sort())).map(x => x.name);
     const lb = s.loopBack;
     const conn = i < n - 1 ? `<div class="conn">${draft.steps[i + 1].dependsOn === undefined ? "✓" : ""}</div>` : "";
-    const filled = s.kind === "bash" ? (s.run || "").trim() : s.prompt.trim();
-    return `<div class="card ${sel?.type === "step" && sel.i === i ? "on" : ""} ${filled ? "" : "empty"} ${s.kind === "bash" ? "bash" : ""}" data-i="${i}" data-drag="card">
+    const gate = s.kind === "gate";
+    const filled = gate ? s.gates.length || s.gate : s.kind === "bash" ? (s.run || "").trim() : s.prompt.trim();
+    return `<div class="card ${sel?.type === "step" && sel.i === i ? "on" : ""} ${filled ? "" : "empty"} ${s.kind === "bash" ? "bash" : ""} ${gate ? "gatecard" : ""}" data-i="${i}" data-drag="card">
       <div class="ctop"><span class="num">${i + 1}</span><b class="cname">${esc(s.name)}</b>
-        <span class="badges">${s.kind === "bash" ? `<span class="free" title="Runs the command with bash: no Claude, no cost">⌨ shell · free</span>` : ""}${s.retries ? `<span class="r" title="Retries">↻${s.retries}</span>` : ""}${s.check ? `<span title="Success check: ${esc(s.check)}">✔ check</span>` : ""}${s.judge ? `<span title="AI judge: ${esc(s.judge)}">⚖ judge</span>` : ""}${s.model ? `<span>${esc(modelLabel(s.model))}</span>` : ""}</span>
+        <span class="badges">${gate ? `<span class="gatetag" title="Checks the work before the workflow goes on; does no work itself">⛩ gate</span>` : ""}${s.kind === "bash" ? `<span class="free" title="Runs the command with bash: no Claude, no cost">⌨ shell · free</span>` : ""}${s.retries ? `<span class="r" title="Retries">↻${s.retries}</span>` : ""}${s.check ? `<span title="Success check: ${esc(s.check)}">✔ check</span>` : ""}${s.judge ? `<span title="AI judge: ${esc(s.judge)}">⚖ judge</span>` : ""}${s.model ? `<span>${esc(modelLabel(s.model))}</span>` : ""}</span>
         <button class="x" data-del="${i}" title="Remove step" aria-label="Remove step">✕</button></div>
-      ${s.kind === "bash" ? `<div class="cprompt cmd">${(s.run || "").trim() ? "$ " + esc(s.run) : "Click to write the shell command…"}</div>`
+      ${gate ? `<div class="cprompt">${filled ? "Checks everything the steps before it changed" + (s.gate ? " (plus its own checks)" : "") + " before the workflow goes on." : "Drop gates here, or click to choose what this gate checks…"}</div>`
+        : s.kind === "bash" ? `<div class="cprompt cmd">${(s.run || "").trim() ? "$ " + esc(s.run) : "Click to write the shell command…"}</div>`
         : `<div class="cprompt">${s.prompt.trim() ? esc(s.prompt) : "Click here to say what Claude should do…"}</div>`}
-      <div class="cagents">${s.agents.length ? s.agents.map(a => `<span class="chip2">⑂ ${esc(a)}<button data-unagent="${esc(a)}" aria-label="Detach">×</button></span>`).join("")
+      ${gate ? "" : `<div class="cagents">${s.agents.length ? s.agents.map(a => `<span class="chip2">⑂ ${esc(a)}<button data-unagent="${esc(a)}" aria-label="Detach">×</button></span>`).join("")
         + `<span class="hint">${s.agents.length === 1 ? "done by this helper" : "uses all of these helpers"}</span>`
-        : `<span class="dropagent">drop helper here</span>`}</div>
+        : `<span class="dropagent">drop helper here</span>`}</div>`}
+      <div class="cgates">${s.gates.map(g => `<span class="chip3" title="${esc(gateChecks(draft.gates.find(x => x.name === g) || {}))}">⛩ ${esc(g)}<button data-ungate="${esc(g)}" aria-label="Remove gate">×</button></span>`).join("")}
+        ${s.gates.length ? `<span class="hint">${gate ? "checks" : "must pass"}</span>` : ""}<span class="dropgate">drop gate here</span></div>
       ${s.review ? `<div class="creview">👤 then pauses for your review<button data-unreview="${i}" aria-label="Remove review checkpoint">×</button></div>` : ""}
       <div class="cfoot">${custom ? `<span class="deps">${deps.length ? "runs after " + deps.map(d => esc(stepName(d))).join(", ") : "starts right away"}</span>` : ""}
         ${siblings.length && (custom || siblings.some(nm => draft.steps.find(x => x.name === nm)?.dependsOn !== undefined)) ? `<span class="par">at the same time as ${siblings.map(esc).join(", ")}</span>` : ""}
@@ -1648,6 +1694,14 @@ function renderLane() {
     <div class="conn"></div><div class="pill end">■ Finish</div>`;
 }
 
+// tick the workflow's gates a step must pass (or a gate step checks)
+function gatePicker(s) {
+  return `<div class="gatelist">${draft.gates.map(g => `<label class="chk"><input type="checkbox" data-sgate="${esc(g.name)}" ${s.gates.includes(g.name) ? "checked" : ""}>
+      <span>⛩ <b>${esc(g.name)}</b> <span class="hint">${esc(g.description || gateChecks(g))}</span></span></label>`).join("")
+    || `<span class="hint">This workflow has no gates yet. Pick one from the gate library on the left, or make your own.</span>`}
+    <button class="linkbtn" data-newgate>＋ New gate</button></div>`;
+}
+
 function renderInspector() {
   const el = document.getElementById("inspector");
   if (sel?.type === "step" && draft.steps[sel.i]) {
@@ -1655,26 +1709,32 @@ function renderInspector() {
     el.innerHTML = `<div class="sub" style="margin-top:0">Step ${i + 1}</div>
       <label class="f">Name<input data-s="name" value="${esc(s.name)}"></label>
       <div class="seg" role="radiogroup" aria-label="Step type">
-        <button class="${s.kind !== "bash" ? "on" : ""}" data-kind="claude" title="Describe the task in plain words; Claude does it">✦ Ask Claude</button>
-        <button class="${s.kind === "bash" ? "on" : ""}" data-kind="bash" title="For people who know the terminal: run a fixed command, no AI, no cost">⌨ Run a command · free</button></div>
-      ${s.kind === "bash" ? `<label class="f">Command <span class="hint">runs in the project folder; it succeeds if the command does</span>
+        <button class="${s.kind !== "bash" && s.kind !== "gate" ? "on" : ""}" data-kind="claude" title="Describe the task in plain words; Claude does it">✦ Ask Claude</button>
+        <button class="${s.kind === "bash" ? "on" : ""}" data-kind="bash" title="For people who know the terminal: run a fixed command, no AI, no cost">⌨ Run a command · free</button>
+        <button class="${s.kind === "gate" ? "on" : ""}" data-kind="gate" title="A checkpoint: does no work, checks what the steps before it did">⛩ Gate</button></div>
+      ${s.kind === "gate" ? `<div class="hint" style="margin:-4px 0 8px">A gate step does no work. It checks everything the steps before it changed, and the workflow goes on only if every gate passes. To fix what fails, set <b>Loop back</b> (under Advanced options) to the step that does the work: it is redone with the gate's feedback.</div>
+        <div class="sub">What this gate checks</div>${gatePicker(s)}
+        ${s.gate ? `<div class="hint">Plus its own checks, written in the workflow file: ${esc(gateChecks(s.gate))}.</div>` : ""}`
+      : s.kind === "bash" ? `<label class="f">Command <span class="hint">runs in the project folder; it succeeds if the command does</span>
           <textarea data-s="run" rows="6" class="mono" placeholder="e.g. ./gradlew test && npm run lint">${esc(s.run || "")}</textarea></label>
         <div class="hint" style="margin:-4px 0 10px">No Claude, so no cost. The previous step's output is in <code>$STEP_INPUT</code> and your review notes are in <code>$STEP_NOTES</code>. This step's output goes to the next step.</div>`
       : `<label class="f"><span class="lrow">What should Claude do?${improveBtn("prompt")}</span><textarea data-s="prompt" rows="9" placeholder="Describe the task in plain words, e.g. “Write a one-page summary of the README for a new teammate.”">${esc(s.prompt)}</textarea></label>`}
       <label class="chk reviewtoggle"><input type="checkbox" data-s="review" ${s.review ? "checked" : ""}>
         <span><b>Pause for my review</b> after this step<br><span class="hint">You check the files it made, then approve, ask for changes or stop.</span></span></label>
+      ${s.kind === "gate" ? "" : `<div class="sub">Gates it must pass</div><div class="hint">Checked after the step succeeds. If one fails, the step fails and its retry or loop-back is told why.</div>${gatePicker(s)}`}
       <details class="adv" ${advOpen ? "open" : ""}><summary>Advanced options${advCount(s, i) ? ` <span class="hint">· ${advCount(s, i)} set</span>` : ""}</summary>
-      ${s.kind === "bash" ? `<div class="grid2">
+      ${s.kind === "gate" ? `<label class="f">Retries <span class="hint">checks again if it fails (for flaky commands)</span><span class="stepper"><button class="btn sm" data-ret="-1">−</button><b>${s.retries}</b><button class="btn sm" data-ret="1">+</button></span></label>`
+      : s.kind === "bash" ? `<div class="grid2">
           <label class="f">Retries<span class="stepper"><button class="btn sm" data-ret="-1">−</button><b>${s.retries}</b><button class="btn sm" data-ret="1">+</button></span></label>
           <label class="f">Time limit (s)<input data-s="timeout" type="number" min="10" value="${esc(s.timeout || 1800)}"></label>
         </div>` : `<div class="grid2">
         <label class="f">Retries <span class="hint">tries again if it fails</span><span class="stepper"><button class="btn sm" data-ret="-1">−</button><b>${s.retries}</b><button class="btn sm" data-ret="1">+</button></span></label>
         <label class="f">AI model<select data-s="model">${modelOpts(s.model, `Same as workflow (${modelLabel(draft.model) || "Claude default"})`)}</select></label>
       </div>`}
-      <label class="f">Success check <span class="hint">optional. A terminal command that must pass, such as your tests. If it fails, the step is retried.</span>
+      ${s.kind === "gate" ? "" : `<label class="f">Success check <span class="hint">optional. A terminal command that must pass, such as your tests. If it fails, the step is retried.</span>
         <input data-s="check" value="${esc(s.check)}" placeholder="e.g. ./gradlew test"></label>
       <label class="f">AI judge: acceptance criteria <span class="hint">optional. A separate AI checks the step's actual file changes against these, one by one. If any isn't met, the step fails and its retry or loop-back gets the judge's feedback.</span>
-        <textarea data-s="judge" rows="4" placeholder="e.g.&#10;- The root cause is fixed, not just the symptom&#10;- A test reproduces the bug and now passes&#10;- No unrelated files changed">${esc(s.judge || "")}</textarea></label>
+        <textarea data-s="judge" rows="4" placeholder="e.g.&#10;- The root cause is fixed, not just the symptom&#10;- A test reproduces the bug and now passes&#10;- No unrelated files changed">${esc(s.judge || "")}</textarea></label>`}
       <div class="sub">Runs after</div>
       <div class="deplist">${i === 0 && s.dependsOn === undefined ? `<span class="hint">First step: starts right away.</span>` : ""}
         ${draft.steps.slice(0, i).map(x => `<label class="chk"><input type="checkbox" data-dep="${esc(x.id)}" ${depsOf(s, i).includes(x.id) ? "checked" : ""}>${esc(x.name)}</label>`).join("")}
@@ -1693,6 +1753,22 @@ function renderInspector() {
         <label class="f">If it fails<select data-s="onFailure">${opts([["stop", "Stop workflow"], ["continue", "Continue anyway"]], s.onFailure)}</select></label>
       </div></details>
       ${s.agents.length ? `<div class="hint" style="margin-top:8px">⑂ ${s.agents.length === 1 ? `Done by the <b>${esc(s.agents[0])}</b> helper.` : `Must use all of: ${s.agents.map(esc).join(", ")} (the try fails if one is skipped).`}</div>` : ""}`;
+  } else if (sel?.type === "gate" && draft.gates[sel.i]) {
+    const g = draft.gates[sel.i];
+    const users = draft.steps.filter(s => s.gates.includes(g.name)).map(s => s.name);
+    el.innerHTML = `<div class="sub" style="margin-top:0">Gate</div>
+      <div class="hint" style="margin-bottom:8px">Give it one or more checks. Commands run first; the AI judge is skipped if a command fails; your approval comes last.</div>
+      <label class="f">Name<input data-g="name" value="${esc(g.name)}"></label>
+      <label class="f">What it ensures <span class="hint">one line, shown on the step</span><input data-g="description" value="${esc(g.description || "")}" placeholder="e.g. The tests pass"></label>
+      <label class="f">Command that must pass <span class="hint">optional; runs in the project folder, exit 0 = pass</span><input data-g="run" class="mono" value="${esc(g.run || "")}" placeholder="e.g. npm test"></label>
+      ${g.run ? `<label class="f">Time limit (s)<input data-g="timeout" type="number" min="10" value="${esc(g.timeout || 600)}"></label>` : ""}
+      <label class="f">AI judge: acceptance criteria <span class="hint">optional; a separate AI checks the actual changes against these</span>
+        <textarea data-g="judge" rows="5" placeholder="e.g.&#10;- Every requirement in docs/spec.md is implemented&#10;- No unrelated files changed">${esc(g.judge || "")}</textarea></label>
+      <label class="chk reviewtoggle"><input type="checkbox" data-g="approve" ${g.approve ? "checked" : ""}>
+        <span><b>Needs my approval</b><br><span class="hint">The run pauses here until you approve, or send the work back with what to change.</span></span></label>
+      <div class="hint" style="margin:8px 0">${users.length ? "Used by: " + users.map(esc).join(", ") : "No step uses this gate yet. Drop it onto a step, or tick it in a gate step."}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-savegate title="Keep this gate for other workflows">⭐ Save to my library</button>
+      <button class="btn danger" data-rmgate>Remove gate</button></div>${improve.msg ? `<div class="hint" style="margin-top:6px">${esc(improve.msg)}</div>` : ""}`;
   } else if (sel?.type === "agent" && draft.agents[sel.i]) {
     const a = draft.agents[sel.i];
     const users = draft.steps.filter(s => s.agents.includes(a.name)).map(s => s.name);
@@ -1773,6 +1849,19 @@ insp.addEventListener("input", e => {
     else st.loopBack[t.dataset.lb] = v;
     renderInspector();
   }
+  if (t.dataset.sgate && sel?.type === "step") {
+    const st = draft.steps[sel.i];
+    st.gates = t.checked ? [...new Set([...st.gates, t.dataset.sgate])] : st.gates.filter(x => x !== t.dataset.sgate);
+  }
+  if (t.dataset.g && sel?.type === "gate") {
+    const g = draft.gates[sel.i];
+    if (t.dataset.g === "name") {
+      const nv = v.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+      for (const s of draft.steps) s.gates = s.gates.map(x => x === g.name ? nv : x);
+      g.name = nv; renderPalette();
+    } else if (t.dataset.g === "timeout") g.timeout = +v || 600;
+    else { g[t.dataset.g] = v; if (t.dataset.g === "run" || t.dataset.g === "approve") { renderInspector(); renderPalette(); } }
+  }
   if (t.dataset.a && sel?.type === "agent") {
     const a = draft.agents[sel.i];
     if (t.dataset.a === "name") {
@@ -1799,7 +1888,7 @@ insp.addEventListener("click", async e => {
   }
   if (b.dataset.kind) {
     const st = draft.steps[sel.i];
-    if (b.dataset.kind === "bash") { st.kind = "bash"; st.run ||= ""; } else { delete st.kind; }
+    if (b.dataset.kind === "bash") { st.kind = "bash"; st.run ||= ""; } else if (b.dataset.kind === "gate") { st.kind = "gate"; } else { delete st.kind; }
     renderLane(); return renderInspector();
   }
   if ("depreset" in b.dataset) { delete draft.steps[sel.i].dependsOn; renderLane(); return renderInspector(); }
@@ -1813,6 +1902,19 @@ insp.addEventListener("click", async e => {
     return renderInspector();
   }
   if (b.dataset.ret) { const s = draft.steps[sel.i]; s.retries = Math.max(0, Math.min(10, s.retries + +b.dataset.ret)); renderLane(); renderInspector(); }
+  if ("newgate" in b.dataset) { e.preventDefault(); return attachGate({ preset: "custom" }, sel.type === "step" ? sel.i : null, true); }
+  if ("savegate" in b.dataset) {
+    const g = draft.gates[sel.i];
+    b.disabled = true;
+    try { DEFAULTS = await api("/api/gates/save", { gate: g }); improve.msg = "⭐ Saved to your library (~/.config/claude-agent-graph/gates.yaml)."; renderPalette(); }
+    catch (err) { improve.msg = err.message; }
+    return renderInspector();
+  }
+  if ("rmgate" in b.dataset) {
+    const gone = draft.gates.splice(sel.i, 1)[0].name;
+    for (const s of draft.steps) s.gates = s.gates.filter(x => x !== gone);
+    return select2(null);
+  }
   if ("rmagent" in b.dataset) {
     const gone = draft.agents.splice(sel.i, 1)[0].name;
     for (const s of draft.steps) s.agents = s.agents.filter(x => x !== gone);
@@ -1844,6 +1946,25 @@ function attachAgent(payload, i) {
     select2({ type: "step", i });
   } else select2({ type: "agent", i: draft.agents.findIndex(a => a.name === name) });
 }
+function attachGate(payload, i, edit) {
+  let name = payload.name;
+  if (!name) {  // from the library, or a new one: put it in the workflow first
+    const key = payload.preset;
+    if (key !== "custom" && libGate(key)) { name = key; ensureGate(key); }
+    else {
+      name = "gate"; let n = 2;
+      while (draft.gates.some(g => g.name === name)) name = "gate-" + n++;
+      draft.gates.push({ name, description: "", run: "", timeout: 600, judge: "", approve: false });
+      edit = true;
+    }
+  }
+  if (i !== null && i !== undefined && draft.steps[i]) {
+    const s = draft.steps[i];
+    if (!s.gates.includes(name)) s.gates.push(name);
+  }
+  if (edit || i === null || i === undefined) return select2({ type: "gate", i: draft.gates.findIndex(g => g.name === name) });
+  select2({ type: "step", i });
+}
 function gapIndex(y) {
   const cards = [...document.querySelectorAll("#cards .card")];
   let i = 0;
@@ -1871,13 +1992,13 @@ addEventListener("pointermove", e => {
     const g = dnd.src.cloneNode(true); g.classList.add("ghost");
     g.style.width = dnd.src.offsetWidth + "px"; document.body.appendChild(g); dnd.ghost = g;
     if (dnd.kind === "card") dnd.src.classList.add("dragging");
-    builder.classList.add(dnd.kind === "agent" || dnd.kind === "review" ? "dragagent" : "dragstep");
+    builder.classList.add(dnd.kind === "gate" ? "draggate" : dnd.kind === "agent" || dnd.kind === "review" ? "dragagent" : "dragstep");
   }
   dnd.ghost.style.transform = `translate(${e.clientX + 8}px, ${e.clientY + 8}px)`;
   document.querySelectorAll(".card.target").forEach(c => c.classList.remove("target"));
   const lane = document.getElementById("lane").getBoundingClientRect();
   const inLane = e.clientX > lane.left && e.clientX < lane.right && e.clientY > lane.top && e.clientY < lane.bottom;
-  if (dnd.kind === "agent" || dnd.kind === "review") {
+  if (dnd.kind === "agent" || dnd.kind === "review" || dnd.kind === "gate") {
     const card = document.elementFromPoint(e.clientX, e.clientY)?.closest(".card");
     if (card) card.classList.add("target");
     dnd.target = card ? +card.dataset.i : null;
@@ -1889,7 +2010,7 @@ addEventListener("pointermove", e => {
 addEventListener("pointerup", e => {
   if (!dnd) return;
   const d = dnd; dnd = null;
-  builder.classList.remove("dragagent", "dragstep");
+  builder.classList.remove("dragagent", "dragstep", "draggate");
   d.ghost?.remove(); showDropLine(null);
   document.querySelectorAll(".card.target, .card.dragging").forEach(c => c.classList.remove("target", "dragging"));
   const ds = d.src.dataset;
@@ -1897,6 +2018,7 @@ addEventListener("pointerup", e => {
     if (d.kind === "step") addStepAt(ds.key, draft.steps.length);
     else if (d.kind === "card") select2({ type: "step", i: +ds.i });
     else if (d.kind === "review") { if (sel?.type === "step") { draft.steps[sel.i].review = true; select2(sel); } }
+    else if (d.kind === "gate") { if (ds.gi !== undefined) select2({ type: "gate", i: +ds.gi }); else attachGate({ preset: ds.gpreset }, null); }
     else if (ds.ai !== undefined) select2({ type: "agent", i: +ds.ai });
     else attachAgent({ preset: ds.preset }, null);
     return;
@@ -1904,6 +2026,7 @@ addEventListener("pointerup", e => {
   if (d.target === null || d.target === undefined) return;
   if (d.kind === "step") addStepAt(ds.key, d.target);
   else if (d.kind === "agent") attachAgent({ name: ds.name, preset: ds.preset }, d.target);
+  else if (d.kind === "gate") attachGate({ name: ds.name, preset: ds.gpreset }, d.target);
   else if (d.kind === "review") { draft.steps[d.target].review = true; select2({ type: "step", i: d.target }); }
   else if (d.kind === "card") {
     const from = +ds.i; let to = d.target;
@@ -1926,17 +2049,20 @@ document.getElementById("lane").addEventListener("click", e => {
     return select2(null);
   }
   if (b.dataset.unreview !== undefined) { draft.steps[+b.dataset.unreview].review = false; return select2({ type: "step", i: +b.dataset.unreview }); }
+  if (b.dataset.ungate) { draft.steps[i].gates = draft.steps[i].gates.filter(x => x !== b.dataset.ungate); return select2({ type: "step", i }); }
   if (b.dataset.unagent) { draft.steps[i].agents = draft.steps[i].agents.filter(x => x !== b.dataset.unagent); return select2({ type: "step", i }); }
 });
 
 async function saveDraft(run) {
   const msg = document.getElementById("bmsg");
   if (!draft.steps.length) { msg.className = "msg err"; msg.textContent = "Add at least one step."; return; }
-  const hole = draft.steps.findIndex(s => s.kind !== "bash" && /<describe [^<>\n]*>/.test(s.prompt));
+  const hole = draft.steps.findIndex(s => !s.kind && /<describe [^<>\n]*>/.test(s.prompt));
   if (hole >= 0 && !confirm(`Step ${hole + 1} (“${draft.steps[hole].name}”) still contains “${draft.steps[hole].prompt.match(/<describe [^<>\n]*>/)[0]}”, a part meant to be filled in. Save anyway?`))
     return select2({ type: "step", i: hole });
-  const empty = draft.steps.findIndex(s => s.kind === "bash" ? !(s.run || "").trim() : !s.prompt.trim());
-  if (empty >= 0) { msg.className = "msg err"; msg.textContent = `Step ${empty + 1} needs ${draft.steps[empty].kind === "bash" ? "a command" : "a prompt"}.`; return select2({ type: "step", i: empty }); }
+  const empty = draft.steps.findIndex(s => s.kind === "gate" ? !s.gates.length && !s.gate : s.kind === "bash" ? !(s.run || "").trim() : !s.prompt.trim());
+  if (empty >= 0) { msg.className = "msg err"; msg.textContent = `Step ${empty + 1} needs ${{ gate: "at least one gate to check", bash: "a command" }[draft.steps[empty].kind] || "a prompt"}.`; return select2({ type: "step", i: empty }); }
+  const hollow = draft.gates.findIndex(g => !(g.run || "").trim() && !(g.judge || "").trim() && !g.approve);
+  if (hollow >= 0) { msg.className = "msg err"; msg.textContent = `The gate “${draft.gates[hollow].name}” needs a command, acceptance criteria or your approval.`; return select2({ type: "gate", i: hollow }); }
   try {
     const saved = await api("/api/workflows/save", draft);
     closeBuilder(); await loadWorkflows();
@@ -2074,7 +2200,7 @@ function stepsAfter(plan, id) {  // how many steps (directly or indirectly) depe
 }
 function steerBox(p, atts, r) {
   const last = atts.at(-1);
-  if (!last || last.kind === "bash") return "";
+  if (!last || last.kind === "bash" || last.kind === "gate") return "";
   if (r.external && r.status === "waiting") return "";  // the review box already points to the terminal
   if (r.external && r.status === "running")
     return `<div class="steerbox quiet">⌨ This run is going in a terminal (<code>agent-graph run</code>). You can follow it here and stop it; steer it once it has finished.</div>`;
@@ -2101,12 +2227,14 @@ function reviewBox(att) {
   if (!(att.review?.status === "pending" && rv.run.status === "waiting")) return "";
   if (rv.run.external) return `<div class="reviewbox"><div class="rbhead">👤 Waiting for your review in the terminal</div>
     <div class="hint">This run was started with <code>agent-graph run</code>. Answer there: approve, request changes, or stop. You can check its files and result here.</div></div>`;
+  const atGate = att.kind === "gate";
   return `<div class="reviewbox">
-    <div class="rbhead">👤 Your review</div>
-    <div class="hint">Check the files below and the Result tab. Then approve, or describe what should change. Claude redoes the step with your feedback.</div>
+    <div class="rbhead">${atGate ? "⛩ Your approval at this gate" : "👤 Your review"}</div>
+    <div class="hint">${atGate ? "Check the Changes tab (everything the steps before this gate changed) and the Result tab. Approve to let the workflow go on, or say what's wrong to send it back: the gate fails, and its loop-back redoes the work with your feedback."
+      : "Check the files below and the Result tab. Then approve, or describe what should change. Claude redoes the step with your feedback."}</div>
     <textarea id="rvfeedback" rows="4" placeholder="Feedback: e.g. “Add a dark theme and make the lesson list collapsible.” With Approve, this goes to the next step as notes.">${esc(rv.draftFeedback || "")}</textarea>
     <div class="rbacts"><button class="btn pri" data-review="approve">✓ Approve & continue</button>
-      <button class="btn" data-review="revise">↺ Request changes</button>
+      <button class="btn" data-review="revise">${atGate ? "↺ Send it back" : "↺ Request changes"}</button>
       <button class="btn danger" data-review="stop">■ Stop workflow</button></div></div>`;
 }
 
@@ -2155,7 +2283,7 @@ function renderRunSide() {
   } else if (rv.tab === "changes") {
     body = `${atts.length > 1 ? attemptChips(atts, att) : ""}${changesHtml(att, r)}`;
   } else if (rv.tab === "output") {
-    body = `${atts.length > 1 ? attemptChips(atts, att) : ""}${judgeHtml(att)}${usageHtml(att)}
+    body = `${atts.length > 1 ? attemptChips(atts, att) : ""}${gatesHtml(att)}${judgeHtml(att)}${usageHtml(att)}
       <pre class="out">${att.output ? esc(att.output) : att.status === "running" ? "Still working…" : "(no output)"}</pre>`;
   } else {
     body = errs.length ? errs.map(a => `<div class="sub">${esc(attLabel(a, true))}</div><pre class="out err">${esc(a.error)}</pre>`).join("")
@@ -2167,7 +2295,7 @@ function renderRunSide() {
   const fb = document.getElementById("rvfeedback");
   if (fb) rv.draftFeedback = fb.value;
   el.innerHTML = `${rewoundHtml(r)}${sideHead(p, r)}${reviewLine(atts, p, r)}${reviewBox(atts.at(-1))}${steerBox(p, atts, r)}
-    <nav class="tabs rvtabs">${tab("input", "Instructions", (att.reads || []).length)}${tab("log", att.status === "running" ? "● Live activity" : "Activity")}${tab("files", "Files", files.size)}${tab("changes", "Changes")}${tab("output", att.judge?.status === "fail" ? "Result ⚖✗" : att.judge?.status === "pass" ? "Result ⚖✓" : "Result")}${tab("errors", "Problems", errs.length)}</nav>
+    <nav class="tabs rvtabs">${tab("input", "Instructions", (att.reads || []).length)}${tab("log", att.status === "running" ? "● Live activity" : "Activity")}${tab("files", "Files", files.size)}${tab("changes", "Changes")}${tab("output", "Result" + (att.judge?.status === "fail" ? " ⚖✗" : att.judge?.status === "pass" ? " ⚖✓" : "") + (att.gates?.some(g => g.status === "fail" || g.status === "error") ? " ⛩✗" : att.gates?.length && att.gates.every(g => g.status === "pass") ? " ⛩✓" : ""))}${tab("errors", "Problems", errs.length)}</nav>
     <div class="rvtab">${body}</div>`;
   const nl = document.getElementById("rvlog");
   if (nl) {  // follow new lines unless the user scrolled up to read
@@ -2175,6 +2303,20 @@ function renderRunSide() {
     nl.scrollTop = stick ? nl.scrollHeight : keep;
   }
   if (rv.tab === "log") ensureLog(att);
+}
+
+// ⛩ how each of the step's gates came out
+function gatesHtml(att) {
+  const items = att.gates || [];
+  if (!items.length) return "";
+  const mark = { pass: ["ok", "✓"], fail: ["no", "✗"], error: ["no", "✗"], pending: ["wait", "…"], running: ["wait", "●"], waiting: ["skip", "○"], skipped: ["skip", "–"] };
+  const what = it => it.kind === "run" ? "command" : it.kind === "judge" ? `AI judge${it.verdict ? ` ${it.verdict.score}/100 · $${(+it.verdict.cost || 0).toFixed(3)}` : ""}` : "your approval";
+  const failed = items.some(it => it.status === "fail" || it.status === "error");
+  return `<div class="gates"><div class="gh">⛩ ${att.kind === "gate" ? "This gate" : "Gates"}: ${failed ? "didn't pass" : items.every(it => it.status === "pass") ? "all passed" : "checking…"}</div>
+    ${items.map(it => { const [cls, sym] = mark[it.status] || ["skip", "–"];
+      const unmet = it.verdict?.criteria?.filter(c => !c.met).map(c => `✗ ${c.criterion}: ${c.evidence}`).join("\n");
+      return `<div class="gi"><span class="${cls}">${sym}</span><b>${esc(it.gate)}</b><span class="hint">${esc(what(it))}</span>
+        ${it.detail || unmet ? `<small>${esc([unmet, it.detail].filter(Boolean).join("\n"))}</small>` : ""}</div>`; }).join("")}</div>`;
 }
 
 // ⚖ the AI judge's verdict, and the step's token use
@@ -2253,6 +2395,7 @@ function fileRow(f, icon, info) {
 function promptBox(p) {
   const wf = workflows.find(w => w.id === rv.run.workflowId), step = wf?.steps.find(s => s.id === p.id);
   if (!step) return `<div class="sub">Step prompt</div><div class="hint" style="margin-bottom:10px">${wf ? "This step is no longer in the workflow." : "The workflow was deleted or its file has an error."}</div>`;
+  if (step.kind === "gate") return `<div class="sub">Gate step</div><div class="hint" style="margin-bottom:10px">Checks ${step.gates.map(g => "⛩ " + esc(g)).join(", ") || "its own checks"} on everything the steps before it changed. Edit the gates in the workflow builder.</div>`;
   const pe = rv.promptEdit?.step === p.id ? rv.promptEdit : null;
   const field = step.kind === "bash" ? "run" : "prompt", what = step.kind === "bash" ? "Command" : "Step prompt";
   const busy = rv.run.status === "running" || rv.run.status === "waiting";
@@ -2419,7 +2562,7 @@ function buildRunGraph() {
     const last = atts.at(-1), st = last ? attStatus(last, r) : r.status === "running" || r.status === "waiting" ? "pending" : "skipped";
     const proj = byId.get("s:" + last?.session)?.project;
     const main = { id: last ? last.session : "p:" + p.id, kind: "step", step: p.id, att: last?.session, x, y, r: 15, num: i + 1,
-                   label: p.name, status: st, color: proj ? projColor(proj) : colors.prompt,
+                   label: (p.kind === "gate" ? "⛩ " : "") + p.name, status: st, color: proj ? projColor(proj) : colors.prompt,
                    sub: last ? `${dur(atts.reduce((s, a) => s + ((a.ended || now()) - a.started), 0))} · ${fmtMoney(atts.reduce((s, a) => s + a.cost, 0))}${atts.length > 1 ? ` · ${atts.length} runs` : ""}` : st === "pending" ? "waiting its turn" : "not run",
                    activity: last?.status === "running" ? byId.get("s:" + last.session)?.activity : "" };
     mains[p.id] = main;

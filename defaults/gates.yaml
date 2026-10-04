@@ -1,0 +1,63 @@
+# Claude Agent Graph: the gate library.
+#
+# A gate is a check a step's work must pass before the workflow goes on. Drag one from the library onto a step
+# (or click it) and it is copied into that workflow, where you can still change it. Use it two ways:
+#   - attached to a step (`gates: [focused-change]`): the step fails if the gate fails, and its retry or
+#     loop-back is told why;
+#   - as a gate step (`gate: [focused-change, sign-off]`): a checkpoint between steps that does no work itself
+#     and checks everything the steps before it changed.
+#
+# Add your own gates in ~/.config/claude-agent-graph/gates.yaml using the same shape: a gate with the same name
+# there replaces the one here.
+#
+# Per gate: description (one line), and at least one of:
+#   run      a shell command that must succeed (exit 0), run in the project folder. timeout: seconds (default 600)
+#   judge    acceptance criteria in plain words; an AI judge grades the real changes (the git diff) against them
+#   approve  true: the run pauses until you approve (or send the work back with your feedback)
+# Commands run first; the AI judge is skipped when a command already failed.
+
+gates:
+
+  focused-change:
+    description: The change does what was asked and nothing else.
+    judge: |
+      - Every changed file is needed for the task; there are no unrelated edits, refactors or reformatting
+      - No debugging leftovers: print/console.log statements, commented-out code or new TODOs
+      - No files were deleted or renamed unless the task asked for it
+
+  tests-included:
+    description: New or changed behaviour comes with tests.
+    judge: |
+      - Every new or changed behaviour is covered by a new or updated automated test
+      - The tests check real outcomes (return values, output, state), not only that code runs without error
+      - Existing tests weren't deleted or weakened to make the change pass
+
+  no-secrets:
+    description: No credentials or private data are added to the code.
+    judge: |
+      - No API keys, tokens, passwords, private keys or connection strings with credentials appear in the changes
+      - No personal data (emails, phone numbers, addresses) of real people is added to code, tests or fixtures
+      - Configuration that needs a secret reads it from the environment or a secrets store, not from the code
+
+  secure-change:
+    description: The change doesn't introduce common security problems.
+    judge: |
+      - User input that reaches SQL, shell commands, file paths, HTML or URLs is validated or escaped
+      - No authentication or authorization check was removed or bypassed
+      - No new dependency is added without a clear need
+
+  docs-updated:
+    description: Docs match the change.
+    judge: |
+      - README, docs or help text that describe the changed behaviour are updated to match
+      - Public functions, commands or settings that were added or changed are documented
+
+  matches-spec:
+    description: Every requirement in the spec is met.
+    judge: |
+      - Every requirement and acceptance criterion in the project's spec (for example docs/spec.md) is implemented
+      - Nothing the spec rules out was built
+
+  sign-off:
+    description: You look at the work and approve it, or send it back with what to change.
+    approve: true

@@ -763,7 +763,7 @@ impl Runner {
         let sessions: Vec<String> = inputs.iter().filter_map(|(_, r)| r.session.clone()).collect();
         let (mut ok, mut out, mut session, mut reason) = self.run_step(wf, rid, &step, &prev_out, &sessions, &notes, extra, 0, loop_n, label);
         let mut new_notes = String::new();
-        if ok && b(&step, "review") && !self.stopped(rid) {
+        if ok && (b(&step, "review") || wants_approval(wf, &step)) && !self.stopped(rid) {
             (ok, out, session, reason, new_notes) = self.review_gate(wf, rid, &step, out, session.unwrap_or_default(), &prev_out, &sessions);
         }
         StepResult { ok, out, session, reason, notes: new_notes }
@@ -831,6 +831,32 @@ impl Runner {
                 }
                 (decision, feedback)
             };
+            let verdict = match decision.as_str() {
+                "approve" => ("pass", if feedback.is_empty() { "approved by you".to_string() } else { format!("approved by you: {feedback}") }),
+                "stop" => ("fail", "you stopped the workflow here".to_string()),
+                _ => ("fail", format!("you asked for changes: {feedback}")),
+            };
+            let gate_step = s(step, "kind") == "gate";
+            self.with_att(rid, &session, |rec| {
+                for g in rec.get_mut("gates").and_then(Value::as_array_mut).into_iter().flatten() {
+                    if g["kind"] == "approve" {
+                        g["status"] = json!(verdict.0);
+                        g["detail"] = json!(verdict.1);
+                    }
+                }
+                if gate_step {
+                    rec["output"] = json!(gate_summary(arr(rec, "gates")));
+                }
+            });
+            if decision == "revise" && s(step, "kind") == "gate" {
+                self.with_att(rid, &session, |rec| {
+                    rec["review"] = json!({"status": "changes", "feedback": feedback, "t": now()});
+                    rec["status"] = json!("failed");
+                    rec["error"] = json!(format!("Sent back at the gate: {feedback}"));
+                });
+                self.changed(rid);
+                return (false, out, Some(session), format!("at the gate “{}”, you asked for changes: {feedback}", s(step, "name")), String::new());
+            }
             if decision == "stop" {
                 self.with_run(rid, |r| r["stop"] = json!(true));
                 self.with_att(rid, &session, |rec| rec["review"] = json!({"status": "stopped", "feedback": feedback, "t": now()}));
@@ -870,6 +896,7 @@ impl Runner {
         let (mut reason, mut out, mut session): (String, String, Option<String>) = Default::default();
         let step_id = s(step, "id");
         let bash = s(step, "kind") == "bash";
+        let gate = s(step, "kind") == "gate";
         // "redo with my feedback" on a finished step: continue its conversation
         let pending = self.lock().resume.get_mut(rid).and_then(|m| m.remove(&step_id));
         let (mut resume, mut steer, mut interrupted) = match pending.filter(|_| !bash) {
@@ -886,6 +913,19 @@ impl Runner {
             }
             let sess = uuid::Uuid::new_v4().to_string();
             session = Some(sess.clone());
+            if gate {
+                // a gate step does no work: it checks what the steps before it did, and passes their output on
+                let (ok, r) = self.run_gate_step(wf, rid, step, prev_out, attempt, revision, loop_n, &sess, prev_session, &reason);
+                reason = r;
+                if ok {
+                    return (true, prev_out.to_string(), session, String::new());
+                }
+                if self.stopped(rid) {
+                    return (false, prev_out.to_string(), session, "stopped".into());
+                }
+                out = prev_out.to_string();
+                continue;
+            }
             if bash {
                 let (ok, o, r) = self.run_bash(wf, rid, step, prev_out, notes, attempt, revision, loop_n, &sess, prev_session, &reason);
                 (out, reason) = (o, r);
@@ -974,6 +1014,11 @@ impl Runner {
                 let (jok, jr, jc) = self.judge(wf, rid, step, &sess, &out);
                 (ok, r) = (jok, jr);
                 cost += jc;
+            }
+            if ok && b(step, "gates") && !self.stopped(rid) {
+                let (gok, gr, gc) = self.attached_gates(wf, rid, step, &sess, &out);
+                (ok, r) = (gok, gr);
+                cost += gc;
             }
             reason = r;
             let status = if ok { "ok" } else if self.stopped(rid) { "stopped" } else { "failed" };
@@ -1275,6 +1320,12 @@ impl Runner {
             self.with_att(rid, session, |rec| rec["cost"] = json!(jc));
             self.add_cost(rid, jc);
         }
+        if ok && b(step, "gates") && !self.stopped(rid) {
+            let (gok, gr, gc) = self.attached_gates(wf, rid, step, session, &out);
+            (ok, reason) = (gok, gr);
+            self.with_att(rid, session, |rec| rec["cost"] = json!(f(rec, "cost") + gc));
+            self.add_cost(rid, gc);
+        }
         let status = if ok { "ok" } else if self.stopped(rid) { "stopped" } else { "failed" };
         let (error, output) = (if ok { String::new() } else { reason.clone() }, last_chars(&out, 4000));
         self.with_att(rid, session, |rec| {
@@ -1292,15 +1343,7 @@ impl Runner {
         self.changed(rid);
         // Retries and revisions build on the files earlier attempts left, so judge everything since the step began
         // (this round of it), not just the last attempt's own changes.
-        let run = self.get_run(rid).unwrap_or_default();
-        let rec = arr(&run, "attempts").iter().rev().find(|a| a["session"] == session).cloned().unwrap_or_default();
-        let num = |a: &Value, k: &str| a.get(k).and_then(Value::as_i64).unwrap_or(0);
-        let base = arr(&run, "attempts")
-            .iter()
-            .find(|a| a["step"] == step["id"] && b(a, "before") && num(a, "replay") == num(&rec, "replay") && num(a, "loop") == num(&rec, "loop"))
-            .map(|a| s(a, "before"))
-            .or_else(|| rec.get("before").and_then(Value::as_str).map(str::to_string));
-        let after = rec.get("after").and_then(Value::as_str).map(str::to_string);
+        let (base, after) = self.step_span(rid, step, session);
         let task = if b(step, "prompt") { s(step, "prompt") } else { format!("$ {}", s(step, "run")) };
         let verdict = quality::judge(&s(step, "judge"), &task, out, &s(wf, "cwd"), base.as_deref(), after.as_deref(), &workflows::written_files(session), &s(wf, "judgeModel"), &compat::claude_cmd());
         let v = match verdict {
@@ -1325,6 +1368,197 @@ impl Runner {
         }
         reason += &format!("\nWhat to fix: {}", s(&v, "feedback"));
         (false, reason, cost)
+    }
+
+    /// The checkpoints to judge an attempt by: from when the step began (this round of it, so retries and
+    /// revisions that build on earlier attempts are included) to the end of this attempt.
+    fn step_span(&self, rid: &str, step: &Value, session: &str) -> (Option<String>, Option<String>) {
+        let run = self.get_run(rid).unwrap_or_default();
+        let rec = arr(&run, "attempts").iter().rev().find(|a| a["session"] == session).cloned().unwrap_or_default();
+        let num = |a: &Value, k: &str| a.get(k).and_then(Value::as_i64).unwrap_or(0);
+        let base = arr(&run, "attempts")
+            .iter()
+            .find(|a| a["step"] == step["id"] && b(a, "before") && num(a, "replay") == num(&rec, "replay") && num(a, "loop") == num(&rec, "loop"))
+            .map(|a| s(a, "before"))
+            .or_else(|| rec.get("before").and_then(Value::as_str).map(str::to_string));
+        (base, rec.get("after").and_then(Value::as_str).map(str::to_string))
+    }
+
+    /// The gates a step must pass (or a gate step checks), with any {{ … }} filled in.
+    fn gate_specs(&self, wf: &Value, rid: &str, step: &Value) -> Res<Vec<Value>> {
+        let mut specs = step_gate_specs(wf, step);
+        if specs.iter().any(|g| template::has_template(&s(g, "run")) || template::has_template(&s(g, "judge"))) {
+            let ctx = self.ctx(rid);
+            for g in specs.iter_mut() {
+                g["run"] = json!(template::render(&s(g, "run"), &ctx, true)?);
+                g["judge"] = json!(template::render(&s(g, "judge"), &ctx, false)?);
+            }
+        }
+        Ok(specs)
+    }
+
+    /// Gates attached to a work step, checked after it (and its own check and judge) succeeded.
+    fn attached_gates(&self, wf: &Value, rid: &str, step: &Value, session: &str, out: &str) -> (bool, String, f64) {
+        let specs = match self.gate_specs(wf, rid, step) {
+            Ok(g) => g,
+            Err(e) => return (false, format!("couldn't fill in a gate's template: {e}"), 0.0),
+        };
+        let (base, after) = self.step_span(rid, step, session);
+        let task = if b(step, "prompt") { s(step, "prompt") } else { format!("$ {}", s(step, "run")) };
+        self.eval_gates(wf, rid, session, &specs, out, &task, base.as_deref(), after.as_deref(), &workflows::written_files(session))
+    }
+
+    /// Check gates in order: commands first (cheap), then the AI judge, which is skipped once a command failed.
+    /// Approval parts stay "pending" until the review pause. Results go to the attempt's `gates`.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_gates(&self, wf: &Value, rid: &str, session: &str, specs: &[Value], out: &str, task: &str, base: Option<&str>, after: Option<&str>, files: &[String]) -> (bool, String, f64) {
+        let mut items: Vec<Value> = vec![];
+        for g in specs {
+            for (kind, on) in [("run", b(g, "run")), ("judge", b(g, "judge")), ("approve", b(g, "approve"))] {
+                if on {
+                    items.push(json!({"gate": g["name"], "kind": kind, "status": if kind == "approve" { "pending" } else { "waiting" }, "detail": ""}));
+                }
+            }
+        }
+        let set = |items: &Vec<Value>| {
+            let items = items.clone();
+            self.with_att(rid, session, |rec| rec["gates"] = json!(items));
+            self.changed(rid);
+        };
+        set(&items);
+        let (mut fails, mut cost) = (vec![], 0.0);
+        let run_env = input_env(&self.get_run(rid).unwrap_or_default());
+        let commands: Vec<(usize, &Value)> =
+            specs.iter().filter_map(|g| items.iter().position(|it| it["gate"] == g["name"] && it["kind"] == "run").map(|i| (i, g))).collect();
+        for (i, g) in commands {
+            if self.stopped(rid) {
+                break;
+            }
+            items[i]["status"] = json!("running");
+            set(&items);
+            let cmd_text = s(g, "run");
+            let timeout = g["timeout"].as_i64().unwrap_or(workflows::GATE_TIMEOUT).max(1) as u64;
+            let mut cmd = compat::shell_command(&cmd_text);
+            cmd.current_dir(s(wf, "cwd")).env("STEP_INPUT", out).envs(run_env.clone());
+            let (status, detail) = match run_capture(cmd, None, Some(Duration::from_secs(timeout))) {
+                Ok(Output { code: Some(0), stdout, .. }) => ("pass", last_chars(stdout.trim(), 600)),
+                Ok(Output { code: None, .. }) => ("fail", format!("`{cmd_text}` timed out after {timeout}s")),
+                Ok(Output { code: Some(c), stdout, stderr }) => ("fail", format!("`{cmd_text}` exited {c}:\n{}", last_chars((stdout + &stderr).trim(), 1500))),
+                Err(e) => ("fail", format!("couldn't run `{cmd_text}`: {e}")),
+            };
+            if status == "fail" {
+                fails.push(format!("gate “{}”: {detail}", s(g, "name")));
+            }
+            items[i]["status"] = json!(status);
+            items[i]["detail"] = json!(detail);
+            set(&items);
+        }
+        for i in 0..items.len() {
+            if items[i]["kind"] != "judge" {
+                continue;
+            }
+            if !fails.is_empty() || self.stopped(rid) {
+                items[i]["status"] = json!("skipped");
+                items[i]["detail"] = json!("not checked: a command gate failed first");
+                continue;
+            }
+            let g = specs.iter().find(|g| g["name"] == items[i]["gate"]).cloned().unwrap_or_default();
+            items[i]["status"] = json!("running");
+            set(&items);
+            match quality::judge(&s(&g, "judge"), task, out, &s(wf, "cwd"), base, after, files, &s(wf, "judgeModel"), &compat::claude_cmd()) {
+                Ok(v) => {
+                    cost += f(&v, "cost");
+                    let pass = b(&v, "pass");
+                    if !pass {
+                        let unmet: Vec<String> = arr(&v, "criteria").iter().filter(|c| !b(c, "met")).map(|c| format!("- {}: {}", s(c, "criterion"), s(c, "evidence"))).collect();
+                        fails.push(format!(
+                            "gate “{}”: the AI judge scored it {}/100.{}\nWhat to fix: {}",
+                            s(&g, "name"),
+                            py_str(&v["score"]),
+                            if unmet.is_empty() { String::new() } else { format!("\nNot met:\n{}", unmet.join("\n")) },
+                            s(&v, "feedback")
+                        ));
+                    }
+                    items[i]["status"] = json!(if pass { "pass" } else { "fail" });
+                    items[i]["detail"] = json!(s(&v, "feedback"));
+                    items[i]["verdict"] = v;
+                }
+                Err(e) => {
+                    fails.push(format!("gate “{}”: AI judge: {e}", s(&g, "name")));
+                    items[i]["status"] = json!("error");
+                    items[i]["detail"] = json!(e);
+                }
+            }
+            set(&items);
+        }
+        (fails.is_empty(), fails.join("\n\n"), cost)
+    }
+
+    /// A gate step: checks everything the steps before it changed, does no work of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn run_gate_step(&self, wf: &Value, rid: &str, step: &Value, prev_out: &str, attempt: i64, revision: i64, loop_n: i64, session: &str, prev_session: &[String], last_reason: &str) -> (bool, String) {
+        let replay = self.with_run(rid, |r| r.get("replay").and_then(Value::as_i64).unwrap_or(0));
+        let specs = self.gate_specs(wf, rid, step);
+        let names: Vec<String> = specs.as_ref().map(|v| v.iter().map(|g| s(g, "name")).collect()).unwrap_or_default();
+        let mut input = format!("Gate: checks {}", names.join(", "));
+        if attempt > 1 {
+            input += &format!("\n\n(retry {}: the previous check failed: {last_reason})", attempt - 1);
+        }
+        let rec = json!({"step": step["id"], "name": step["name"], "attempt": attempt, "revision": revision, "session": session,
+            "replay": replay, "loop": loop_n, "kind": "gate", "input": input, "inputModel": "gate (checks only)",
+            "status": "running", "started": now(), "ended": null, "cost": 0.0, "error": "", "output": ""});
+        self.with_run(rid, |r| {
+            r["attempts"].as_array_mut().unwrap().push(rec);
+            r["current"] = step["id"].clone();
+        });
+        self.link(rid, step, session, attempt, if revision == 0 { prev_session } else { &[] }, revision, loop_n);
+        // what to judge: everything changed since the first of the steps before this gate started (this replay)
+        let cwd = s(wf, "cwd");
+        let after = quality::snapshot(&cwd);
+        let upstream = upstream_steps(wf, &s(step, "id"));
+        let run = self.get_run(rid).unwrap_or_default();
+        let earlier: Vec<&Value> = arr(&run, "attempts")
+            .iter()
+            .filter(|a| upstream.contains(&s(a, "step")) && a.get("replay").and_then(Value::as_i64).unwrap_or(0) == replay)
+            .collect();
+        let base = earlier.iter().find(|a| b(a, "before")).map(|a| s(a, "before")).or_else(|| after.clone());
+        let mut files: Vec<String> = vec![];
+        for a in &earlier {
+            for p in workflows::written_files(&s(a, "session")) {
+                if !files.contains(&p) {
+                    files.push(p);
+                }
+            }
+        }
+        self.with_att(rid, session, |rec| {
+            rec["before"] = json!(base.as_ref().filter(|_| after.is_some()));
+            rec["after"] = json!(after);
+        });
+        self.changed(rid);
+        let names_done: Vec<String> = upstream_names(wf, &upstream);
+        let task = format!(
+            "The work done so far by the workflow “{}” ({}). This gate checks it before the workflow goes on.",
+            s(wf, "name"),
+            if names_done.is_empty() { "no earlier steps".to_string() } else { format!("steps: {}", names_done.join(", ")) }
+        );
+        let (ok, reason, cost) = match &specs {
+            Ok(specs) => self.eval_gates(wf, rid, session, specs, prev_out, &task, base.as_deref(), after.as_deref(), &files),
+            Err(e) => (false, format!("couldn't fill in a gate's template: {e}"), 0.0),
+        };
+        let summary = self
+            .get_run(rid)
+            .and_then(|r| arr(&r, "attempts").iter().rev().find(|a| a["session"] == session).map(|a| gate_summary(arr(a, "gates"))))
+            .unwrap_or_default();
+        let status = if ok { "ok" } else if self.stopped(rid) { "stopped" } else { "failed" };
+        let error = if ok { String::new() } else { reason.clone() };
+        self.with_att(rid, session, |rec| {
+            for (k, v) in [("status", json!(status)), ("ended", json!(now())), ("cost", json!(cost)), ("error", json!(error)), ("output", json!(summary))] {
+                rec[k] = v;
+            }
+        });
+        self.add_cost(rid, cost);
+        self.changed(rid);
+        (ok, reason)
     }
 
     fn attempt(&self, rid: &str, session: &str) -> Res<(Value, Value)> {
@@ -1661,7 +1895,58 @@ fn plan(wf: &Value) -> Value {
     json!(arr(wf, "steps").iter().map(|st| json!({"id": st["id"], "name": st["name"], "agents": st["agents"],
         "retries": st["retries"], "check": st["check"], "judge": s(st, "judge"), "review": st["review"],
         "dependsOn": st["dependsOn"], "loopBack": st["loopBack"], "onSuccess": st["onSuccess"], "onFailure": st["onFailure"],
-        "kind": s_or(st, "kind", "claude"), "run": s(st, "run")})).collect::<Vec<_>>())
+        "kind": s_or(st, "kind", "claude"), "run": s(st, "run"), "gates": st.get("gates").cloned().unwrap_or(json!([])),
+        "gate": st.get("gate").cloned().unwrap_or(Value::Null)})).collect::<Vec<_>>())
+}
+
+/// A step's gates: the named ones (in the order it lists them), then a gate step's own inline checks.
+fn step_gate_specs(wf: &Value, step: &Value) -> Vec<Value> {
+    let mut specs: Vec<Value> = str_list(step, "gates")
+        .iter()
+        .filter_map(|n| arr(wf, "gates").iter().find(|g| s(g, "name") == *n).cloned())
+        .collect();
+    if step.get("gate").is_some_and(Value::is_object) {
+        let mut g = step["gate"].clone();
+        g["name"] = json!(s(step, "name"));
+        specs.push(g);
+    }
+    specs
+}
+
+/// Whether finishing this step needs a person's approval (one of its gates has approve: true).
+fn wants_approval(wf: &Value, step: &Value) -> bool {
+    step_gate_specs(wf, step).iter().any(|g| b(g, "approve"))
+}
+
+/// Every step this one depends on, directly or indirectly.
+fn upstream_steps(wf: &Value, sid: &str) -> HashSet<String> {
+    let steps = arr(wf, "steps");
+    let deps = |id: &str| steps.iter().find(|st| st["id"] == id).map(|st| str_list(st, "dependsOn")).unwrap_or_default();
+    let (mut seen, mut todo) = (HashSet::new(), deps(sid));
+    while let Some(d) = todo.pop() {
+        if seen.insert(d.clone()) {
+            todo.extend(deps(&d));
+        }
+    }
+    seen
+}
+
+fn upstream_names(wf: &Value, ids: &HashSet<String>) -> Vec<String> {
+    arr(wf, "steps").iter().filter(|st| ids.contains(&s(st, "id"))).map(|st| s(st, "name")).collect()
+}
+
+/// One line per gate check, for a gate step's result.
+fn gate_summary(items: &[Value]) -> String {
+    items
+        .iter()
+        .map(|it| {
+            let mark = match s(it, "status").as_str() { "pass" => "✓", "fail" | "error" => "✗", "pending" => "…", _ => "–" };
+            let what = match s(it, "kind").as_str() { "run" => "command", "judge" => "AI judge", _ => "your approval" };
+            let detail = first_line(&s(it, "detail"));
+            format!("{mark} {} ({what}){}", s(it, "gate"), if detail.is_empty() { String::new() } else { format!(": {detail}") })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn step_agents(wf: &Value, step: &Value) -> Vec<Value> {
