@@ -456,7 +456,7 @@ The native window needs these to **build**:
 
 ### Building a release
 
-Every merge to `main` builds and publishes a release automatically (`.github/workflows/release.yml`). To build one by hand:
+A merge to `main` with `feat`, `fix` or breaking [Conventional Commits](https://www.conventionalcommits.org) builds and publishes a release automatically, versioned from those commits (`.github/workflows/release.yml`). To build one by hand:
 
 Everything except the Linux window build is cross-compiled from one Linux machine with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild). It uses [zig](https://ziglang.org) as the linker, so no other toolchains or SDKs are needed:
 
@@ -486,6 +486,12 @@ cargo run -- --browser     # the app
 cargo run -- list          # a terminal command
 cargo test
 cargo clippy
+```
+
+Turn on the git hooks once per clone. They check that commit messages follow [Conventional Commits](https://www.conventionalcommits.org) and run `cargo test` before each push:
+
+```sh
+git config core.hooksPath .githooks
 ```
 
 ```

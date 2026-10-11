@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the unit tests before every push. Skip once with `git push --no-verify`.
+exec cargo test --quiet
