@@ -8,10 +8,11 @@ The app is Rust only. The old Python app is kept only as the `python-final` tag.
 
 Prebuilt programs are published as GitHub Releases, not committed. The installers download from the latest release.
 
-1. Push `main` before tagging, so the tag matches the code the binaries were built from.
-2. Build each target (see "Building a release" in the README) into a git-ignored `binaries/` folder.
-3. `cd binaries && sha256sum agent-graph-* > SHA256SUMS && sha256sum -c SHA256SUMS`
-4. `gh release create vX.Y.Z agent-graph-* SHA256SUMS --target main --generate-notes`
+Every merge to `main` runs `.github/workflows/release.yml`, which builds all targets and publishes the release with `SHA256SUMS`. The tag is the `Cargo.toml` version, or the next patch after the latest tag if that version is already released. Bump `Cargo.toml` for a minor or major release. Docs-only merges don't release.
+
+Pushes to other branches run `cargo test` (`.github/workflows/test.yml`).
+
+To release by hand instead, see "Building a release" in the README.
 
 v0.1.0 was the first release.
 
