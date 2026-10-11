@@ -488,6 +488,12 @@ cargo test
 cargo clippy
 ```
 
+Turn on the git hooks once per clone. They check that commit messages follow [Conventional Commits](https://www.conventionalcommits.org) and run `cargo test` before each push:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ```
 src/
   main.rs       command line, window
