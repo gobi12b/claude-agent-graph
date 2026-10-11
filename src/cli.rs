@@ -1,5 +1,5 @@
 //! Run workflows from the terminal: `agent-graph list`, `agent-graph run <workflow or file.yaml>`,
-//! `agent-graph validate [workflows or files]`, `agent-graph runs`.
+//! `agent-graph validate [workflows or files]`, `agent-graph runs`, `agent-graph resume <run id>`.
 //!
 //! Runs use the same runner as the app and are saved in the same place, so they also show up on the app's
 //! Runs page. A step that pauses for review asks you here (approve, request changes, or stop).
@@ -63,6 +63,20 @@ enum Cmd {
         /// run in a separate git worktree (worktree), or in the folder itself (none)
         #[arg(long, value_parser = ["none", "worktree"])]
         isolation: Option<String>,
+    },
+    /// continue a run that was cut off (its app or terminal closed mid-run) from the first unfinished step
+    Resume {
+        /// the run's id (see `agent-graph runs`)
+        run: String,
+        /// approve review points automatically
+        #[arg(short, long)]
+        yes: bool,
+        /// don't print the final result
+        #[arg(short, long)]
+        quiet: bool,
+        /// print a JSON summary at the end instead of progress
+        #[arg(long)]
+        json: bool,
     },
     /// remove the separate copies (worktrees) of finished runs
     Clean,
@@ -395,12 +409,31 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
     }
     let given = gather_inputs(&wf, pairs, inputs_file, std::io::stdin().is_terminal() && !as_json);
     let runner = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
-    let interactive = std::io::stdin().is_terminal() && !yes;
     let rid = runner.start(&s(&wf, "id"), Some(wf.clone()), &given).unwrap_or_else(|e| die(e));
     if !as_json {
         println!("{}{}", c("1", &format!("▶ {}", s(&wf, "name"))), c("2", &format!("  ({} steps · run {rid})", arr(&wf, "steps").len())));
         println!("{}", c("2", &format!("  in {}   ·   Ctrl+C stops it", tilde(&s(&wf, "cwd")))));
     }
+    follow(&runner, &rid, yes, quiet, as_json)
+}
+
+fn cmd_resume(rid: &str, yes: bool, quiet: bool, as_json: bool) -> i32 {
+    on_interrupt();
+    let runner = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
+    runner.resume(rid).unwrap_or_else(|e| die(e));
+    let run = runner.get_run(rid).unwrap_or_default();
+    if !as_json {
+        let done = arr(&run, "attempts").iter().filter(|a| s(a, "status") == "ok").map(|a| s(a, "step")).collect::<std::collections::HashSet<_>>().len();
+        println!("{}{}", c("1", &format!("▶ Resuming {}", s(&run, "name"))), c("2", &format!("  (run {rid} · {done} step{} already done)", if done == 1 { "" } else { "s" })));
+        println!("{}", c("2", &format!("  in {}   ·   Ctrl+C stops it", tilde(&s(&run, "cwd")))));
+    }
+    follow(&runner, rid, yes, quiet, as_json)
+}
+
+/// Print the run's progress until it ends, asking for reviews; returns the exit code.
+fn follow(runner: &Runner, rid: &str, yes: bool, quiet: bool, as_json: bool) -> i32 {
+    let rid = rid.to_string();
+    let interactive = std::io::stdin().is_terminal() && !yes;
     let mut seen: HashMap<String, String> = HashMap::new();
     let mut stopping = false;
     loop {
@@ -430,6 +463,9 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
             if b(att, "steer") {
                 label += " (steered)";
             }
+            if b(att, "resumed") {
+                label += " (continued)";
+            }
             match st.as_str() {
                 "running" => println!("  {} {label}…", c("33", "●")),
                 "ok" => {
@@ -452,7 +488,7 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
                 if yes {
                     let _ = runner.review(&rid, "approve", "");
                 } else if interactive {
-                    if ask_review(&runner, &rid, &att).is_none() {
+                    if ask_review(runner, &rid, &att).is_none() {
                         stopping = true;
                         break;
                     }
@@ -462,7 +498,7 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
                         "{}",
                         c("35", &format!("👤 “{}” needs your review. Run it in a terminal you can type in, add --yes to approve reviews automatically, or use the app.", s(&att, "name")))
                     );
-                    wait_end(&runner, &rid, Duration::from_secs(60));
+                    wait_end(runner, &rid, Duration::from_secs(60));
                     return NEEDS_REVIEW;
                 }
             }
@@ -475,7 +511,7 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
     if stopping {
         println!("{}", c("31", "\n■ Stopping…"));
         let _ = runner.stop(&rid);
-        wait_end(&runner, &rid, Duration::from_secs(60));
+        wait_end(runner, &rid, Duration::from_secs(60));
     }
     let run = runner.get_run(&rid).unwrap_or_default();
     let status = s(&run, "status");
@@ -492,6 +528,7 @@ fn cmd_run(workflow: &str, folder: Option<&str>, yes: bool, quiet: bool, as_json
             "succeeded" => c("32;1", "✓ Finished"),
             "failed" => c("31;1", "✗ Failed"),
             "stopped" => c("2;1", "■ Stopped"),
+            "interrupted" => c("33;1", "⏸ Interrupted"),
             other => other.to_string(),
         };
         let ended = run.get("ended").and_then(Value::as_f64).unwrap_or_else(now);
@@ -625,6 +662,7 @@ pub fn main(args: Vec<String>) -> i32 {
         Cmd::Run { workflow, folder, yes, quiet, json, input, inputs, isolation } => {
             cmd_run(&workflow, folder.as_deref(), yes, quiet, json, &input, inputs.as_deref(), isolation.as_deref())
         }
+        Cmd::Resume { run, yes, quiet, json } => cmd_resume(&run, yes, quiet, json),
         Cmd::Clean => cmd_clean(),
         Cmd::Validate { targets, folder, strict, json } => cmd_validate(&targets, folder.as_deref(), strict, json),
         Cmd::Runs { limit, json } => cmd_runs(limit, json),

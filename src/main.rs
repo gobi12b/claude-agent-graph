@@ -40,7 +40,7 @@ struct Args {
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    if argv.first().is_some_and(|a| ["run", "list", "runs", "validate", "clean"].contains(&a.as_str())) {
+    if argv.first().is_some_and(|a| ["run", "resume", "list", "runs", "validate", "clean"].contains(&a.as_str())) {
         // terminal commands, no window
         std::process::exit(cli::main(argv));
     }

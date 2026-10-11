@@ -175,6 +175,7 @@ impl App {
             "/api/runs/discard" => r.discard(&id()?),
             "/api/runs/deliver" => r.deliver_now(&id()?, opt_truthy(b.get("pr"))),
             "/api/runs/stop" => r.stop(&id()?),
+            "/api/runs/resume" => r.resume(&id()?),
             "/api/runs/replay" => r.replay(&id()?, &req_str(b, "step")?, opt_truthy(b.get("only")), None),
             "/api/folders/check" => check_folder(b),
             "/api/models/extra" => providers::set_extra_models(&s(b, "provider"), b.get("models").unwrap_or(&Value::Null)),
@@ -259,11 +260,12 @@ impl App {
 
     pub fn initial_scan(&self) {
         self.graph.scan(false); // history: shown, but not animated
+        self.runner.auto_resume(); // runs cut off by a crash, of workflows that ask for it
     }
 }
 
-const API_POST: [&str; 36] = [
-    "/api/runs/apply", "/api/runs/unapply", "/api/runs/discard", "/api/runs/deliver",
+const API_POST: [&str; 37] = [
+    "/api/runs/resume", "/api/runs/apply", "/api/runs/unapply", "/api/runs/discard", "/api/runs/deliver",
     "/kill", "/api/permissions", "/api/workflows/save", "/api/workflows/delete", "/api/workflows/open", "/api/agents/save",
     "/api/agents/delete", "/api/steps/save", "/api/steps/delete", "/api/gates/save", "/api/gates/delete", "/api/ides/set", "/api/runs/ide", "/api/runs/start",
     "/api/runs/stop", "/api/runs/replay", "/api/folders/check", "/api/models/extra", "/api/folders/pick", "/api/runs/steer",

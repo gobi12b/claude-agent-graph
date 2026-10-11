@@ -106,9 +106,9 @@ pub fn find_workflow(wid: &str) -> Option<Value> {
 
 // ---- workflow files given on the command line --------------------------------------------------------
 
-const WF_KEYS: [&str; 23] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
+const WF_KEYS: [&str; 24] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
     "maxBudgetUsd", "judgeModel", "agents", "gates", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver",
-    "limits", "protect", "redact", "redactPatterns"];
+    "limits", "protect", "redact", "redactPatterns", "autoResume"];
 const INPUT_KEYS: [&str; 5] = ["description", "type", "required", "default", "options"];
 const WORKTREE_KEYS: [&str; 4] = ["base", "keep", "setup", "copy"];
 const DELIVER_KEYS: [&str; 6] = ["branch", "commit", "message", "push", "pr", "when"];
@@ -706,6 +706,7 @@ pub fn validate(wf: &Value) -> Res<Value> {
         "isolation": isolation,
         "worktree": worktree,
         "deliver": deliver,
+        "autoResume": wf.get("autoResume").map(truthy).unwrap_or(false),
         "agents": agents,
         "gates": gates,
         "steps": clean,
