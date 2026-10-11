@@ -70,7 +70,8 @@ struct State {
     own: HashSet<String>,                          // runs this process is running (the others are history, or live elsewhere)
     disk: HashMap<String, Option<f64>>,            // run id -> file time last read
     steer: HashMap<String, HashMap<String, String>>,
-    resume: HashMap<String, HashMap<String, (String, String)>>,
+    resume: HashMap<String, HashMap<String, (String, String, bool)>>, // step -> (session, message, after a crash)
+    reviews: HashMap<String, HashMap<String, (String, String)>>,      // step -> (output, session) still waiting for review
     decision: HashMap<String, (String, String)>,
     usage: HashMap<String, Value>, // session -> token usage reported by claude -p
 }
@@ -83,6 +84,23 @@ pub struct Runner {
 }
 
 type Outcome = (bool, String, Option<String>, String);
+
+/// Where run_all starts from: results of steps already done, and the loop-back counters so far.
+#[derive(Default)]
+struct Seed {
+    results: HashMap<String, StepResult>,
+    loops: HashMap<String, i64>,
+    hops: usize,
+}
+
+/// How an interrupted run picks up again (see `resume_point`).
+#[derive(Default)]
+struct ResumePoint {
+    seed: Seed,
+    todo: HashSet<String>,
+    restart: HashMap<String, String>,          // step -> session of its mid-flight attempt, to continue
+    reviews: HashMap<String, (String, String)>, // step -> (output, session) that was waiting for review
+}
 
 impl Runner {
     pub fn new(graph: Arc<Graph>, notify: Box<dyn Fn() + Send + Sync>) -> Arc<Runner> {
@@ -146,8 +164,7 @@ impl Runner {
                 if pid != 0 && pid != std::process::id() && compat::pid_alive(pid) {
                     run["external"] = json!(true); // live in a terminal: follow it here, control it there
                 } else {
-                    run["status"] = json!("stopped"); // its process was closed mid-run
-                    run.as_object_mut().unwrap().shift_remove("external");
+                    mark_interrupted(&mut run); // its process was closed mid-run: it can be resumed
                 }
             }
             {
@@ -189,7 +206,8 @@ impl Runner {
         let rid = format!("{}{}", local_time("%Y%m%d-%H%M%S-"), hex_id(4));
         let run = json!({"id": rid, "workflowId": wf["id"], "name": wf["name"], "status": "running", "started": now(),
             "ended": null, "current": null, "cost": 0.0, "attempts": [], "stop": false, "cwd": wf["cwd"], "project": wf["cwd"],
-            "inputs": values, "isolation": wf["isolation"], "plan": plan(&wf), "pid": std::process::id(), "file": s(&wf, "file")});
+            "inputs": values, "isolation": wf["isolation"], "plan": plan(&wf), "pid": std::process::id(), "file": s(&wf, "file"),
+            "autoResume": b(&wf, "autoResume")});
         {
             let mut st = self.lock();
             st.runs.insert(rid.clone(), run.clone());
@@ -205,7 +223,7 @@ impl Runner {
         let id = rid.clone();
         std::thread::spawn(move || {
             if let Some(wf) = me.prepare(wf, &id) {
-                me.run_all(Arc::new(wf), &id, None, HashMap::new());
+                me.run_all(Arc::new(wf), &id, None, Seed::default());
             }
         });
         self.changed(&rid);
@@ -251,17 +269,7 @@ impl Runner {
         if status == "running" || status == "waiting" {
             return err("This run is still going. Wait for it to finish, or stop it, before replaying a step.");
         }
-        let mut wf = find_workflow(&s(&run, "workflowId"));
-        if wf.is_none() && is_file(&s(&run, "file")) {
-            // a workflow file run from the command line
-            wf = Some(read_file(&s(&run, "file"), Some(&project_of(&run)).filter(|c| !c.is_empty()).map(String::as_str))?.0);
-        }
-        let mut wf = validate(&wf.ok_or("The workflow was deleted, so its steps can't be replayed.")?)?;
-        if run.get("worktree").is_some_and(Value::is_object) {
-            // replay in the run's own worktree (brought back if it was removed)
-            self.ensure_worktree(rid)?;
-            wf["cwd"] = run["worktree"]["folder"].clone();
-        }
+        let wf = self.saved_workflow(rid, &run, "replayed")?;
         let steps = arr(&wf, "steps");
         let Some(step) = steps.iter().find(|st| st["id"] == step_id) else {
             return err("This step is no longer in the workflow.");
@@ -293,7 +301,7 @@ impl Runner {
             run.as_object_mut().unwrap().shift_remove("external");
             st.own.insert(rid.into());
             st.steer.insert(rid.into(), HashMap::new());
-            st.resume.insert(rid.into(), resume.iter().map(|r| (step_id.to_string(), r.clone())).collect());
+            st.resume.insert(rid.into(), resume.iter().map(|(sess, msg)| (step_id.to_string(), (sess.clone(), msg.clone(), false))).collect());
         }
         {
             let mut g = self.graph.lock();
@@ -303,9 +311,74 @@ impl Runner {
         }
         let me = self.clone();
         let id = rid.to_string();
-        std::thread::spawn(move || me.run_all(Arc::new(wf), &id, Some(redo), seed));
+        std::thread::spawn(move || me.run_all(Arc::new(wf), &id, Some(redo), Seed { results: seed, ..Default::default() }));
         self.changed(rid);
         Ok(json!(rid))
+    }
+
+    /// The run's workflow as saved now (or its file, for a run started from one), set to work in the run's own
+    /// worktree if it has one (brought back if it was removed). what: "replayed" / "resumed", for the error.
+    fn saved_workflow(&self, rid: &str, run: &Value, what: &str) -> Res<Value> {
+        let mut wf = find_workflow(&s(run, "workflowId"));
+        if wf.is_none() && is_file(&s(run, "file")) {
+            // a workflow file run from the command line
+            wf = Some(read_file(&s(run, "file"), Some(&project_of(run)).filter(|c| !c.is_empty()).map(String::as_str))?.0);
+        }
+        let mut wf = validate(&wf.ok_or(format!("The workflow was deleted, so its steps can't be {what}."))?)?;
+        if run.get("worktree").is_some_and(Value::is_object) {
+            self.ensure_worktree(rid)?;
+            wf["cwd"] = run["worktree"]["folder"].clone();
+        }
+        Ok(wf)
+    }
+
+    /// Continue a run whose app or terminal closed mid-run, from the first step that hadn't finished. Finished
+    /// steps keep their results (and their cost isn't counted again); a step that was mid-flight starts again,
+    /// continuing its conversation where the tool can; a step that was waiting for review asks again.
+    pub fn resume(self: &Arc<Self>, rid: &str) -> Res<Value> {
+        let run = self.get_run(rid).ok_or("Run not found.")?;
+        if s(&run, "status") != "interrupted" {
+            return err("Only a run that was interrupted (its app or terminal closed while it ran) can be resumed.");
+        }
+        let wf = self.saved_workflow(rid, &run, "resumed")?;
+        let point = resume_point(&run, arr(&wf, "steps"));
+        {
+            let mut st = self.lock();
+            let run = st.runs.get_mut(rid).ok_or("Run not found.")?;
+            run["resumed"] = json!(run.get("resumed").and_then(Value::as_i64).unwrap_or(0) + 1);
+            for (k, v) in [("status", json!("running")), ("ended", Value::Null), ("stop", json!(false)), ("error", json!("")), ("plan", plan(&wf)), ("pid", json!(std::process::id()))] {
+                run[k] = v;
+            }
+            run.as_object_mut().unwrap().shift_remove("external");
+            st.own.insert(rid.into());
+            st.steer.insert(rid.into(), HashMap::new());
+            st.resume.insert(rid.into(), point.restart.iter().map(|(step, sess)| (step.clone(), (sess.clone(), String::new(), true))).collect());
+            st.reviews.insert(rid.into(), point.reviews);
+        }
+        {
+            let mut g = self.graph.lock();
+            g.edge("you", &format!("w:{rid}"), "prompt", Some(now()), &format!("Resumed “{}”", s(&run, "name")), true);
+            g.version += 1;
+        }
+        let me = self.clone();
+        let id = rid.to_string();
+        std::thread::spawn(move || me.run_all(Arc::new(wf), &id, Some(point.todo), point.seed));
+        self.changed(rid);
+        Ok(json!(rid))
+    }
+
+    /// Resume the interrupted runs of workflows with `autoResume: true` (at app start). Returns their ids.
+    pub fn auto_resume(self: &Arc<Self>) -> Vec<String> {
+        let ids: Vec<String> = self.lock().runs.values().filter(|r| s(r, "status") == "interrupted" && b(r, "autoResume")).map(|r| s(r, "id")).collect();
+        ids.into_iter()
+            .filter(|rid| match self.resume(rid) {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!("couldn't resume run {rid}: {e}");
+                    false
+                }
+            })
+            .collect()
     }
 
     pub fn detail(&self, rid: &str) -> Res<Value> {
@@ -599,19 +672,26 @@ impl Runner {
 
     /// Run steps in dependency order, in parallel where they don't depend on each other, and go back to
     /// an earlier step when a loopBack fires. todo: the steps to run (default all); seed: earlier results.
-    fn run_all(self: &Arc<Self>, wf: Arc<Value>, rid: &str, todo: Option<HashSet<String>>, seed: HashMap<String, StepResult>) {
+    fn run_all(self: &Arc<Self>, wf: Arc<Value>, rid: &str, todo: Option<HashSet<String>>, seed: Seed) {
         let steps = arr(&wf, "steps").to_vec();
         let by: HashMap<String, Value> = steps.iter().map(|st| (s(st, "id"), st.clone())).collect();
         let order = topo_order(&steps).unwrap_or_default();
         let mut todo: HashSet<String> = todo.unwrap_or_else(|| by.keys().cloned().collect());
-        let mut results = seed;
+        let mut results = seed.results;
         let mut status: HashMap<String, &str> = by.keys().map(|k| (k.clone(), if todo.contains(k) { "pending" } else { "done" })).collect();
-        let (mut loops, mut loop_notes, mut stale, mut running): (HashMap<String, i64>, HashMap<String, String>, HashSet<String>, HashSet<String>) = Default::default();
+        for (k, r) in &results {
+            if status.get(k) == Some(&"done") && !r.ok {
+                status.insert(k.clone(), "continued"); // failed, but the workflow went on past it
+            }
+        }
+        let mut loops = seed.loops;
+        let (mut loop_notes, mut stale, mut running): (HashMap<String, String>, HashSet<String>, HashSet<String>) = Default::default();
         let (tx, rx) = mpsc::channel::<(String, StepResult)>();
-        let (mut hops, mut fin, mut ended_early) = (0usize, "succeeded", false);
+        let (mut hops, mut fin, mut ended_early) = (seed.hops, "succeeded", false);
         let mut error = None;
 
         loop {
+            self.save_progress(rid, &status, &results, &loops, hops);
             if !self.stopped(rid) && !ended_early && fin == "succeeded" {
                 for sid in &order {
                     let deps = str_list(&by[sid], "dependsOn");
@@ -731,7 +811,9 @@ impl Runner {
             let mut st = self.lock();
             st.steer.remove(rid);
             st.resume.remove(rid);
+            st.reviews.remove(rid);
             if let Some(r) = st.runs.get_mut(rid) {
+                r.as_object_mut().unwrap().shift_remove("resumeFrom"); // only an interrupted run needs it
                 if fin == "failed" {
                     r["stop"] = json!(false);
                 }
@@ -745,6 +827,21 @@ impl Runner {
         }
         self.changed(rid);
         self.after_run(&wf, rid);
+    }
+
+    /// Record what an interrupted run would resume from: the finished steps with their results, and the loop
+    /// counters. Saved with the run file, after each step.
+    fn save_progress(&self, rid: &str, status: &HashMap<String, &str>, results: &HashMap<String, StepResult>, loops: &HashMap<String, i64>, hops: usize) {
+        let mut steps = Map::new();
+        for (sid, r) in results {
+            if ["done", "continued"].contains(&status.get(sid).copied().unwrap_or("")) {
+                steps.insert(sid.clone(), json!({"ok": r.ok, "output": r.out, "session": r.session, "reason": r.reason, "notes": r.notes}));
+            }
+        }
+        let rec = json!({"steps": steps, "loops": loops, "hops": hops});
+        if self.with_run(rid, |r| (r.get("resumeFrom") != Some(&rec)).then(|| r["resumeFrom"] = rec).is_some()) {
+            self.changed(rid);
+        }
     }
 
     fn worker(self: &Arc<Self>, wf: &Value, rid: &str, sid: &str, inputs: Vec<(String, StepResult)>, extra: &str, loop_n: i64) -> StepResult {
@@ -761,7 +858,12 @@ impl Runner {
         };
         let notes = inputs.iter().filter(|(_, r)| !r.notes.is_empty()).map(|(_, r)| r.notes.clone()).collect::<Vec<_>>().join("\n\n");
         let sessions: Vec<String> = inputs.iter().filter_map(|(_, r)| r.session.clone()).collect();
-        let (mut ok, mut out, mut session, mut reason) = self.run_step(wf, rid, &step, &prev_out, &sessions, &notes, extra, 0, loop_n, label);
+        // a step that was waiting for review when the run was interrupted: ask again rather than redo it
+        let waited = self.lock().reviews.get_mut(rid).and_then(|m| m.remove(sid)).filter(|_| b(&step, "review"));
+        let (mut ok, mut out, mut session, mut reason) = match waited {
+            Some((out, sess)) => (true, out, Some(sess), String::new()),
+            None => self.run_step(wf, rid, &step, &prev_out, &sessions, &notes, extra, 0, loop_n, label),
+        };
         let mut new_notes = String::new();
         if ok && b(&step, "review") && !self.stopped(rid) {
             (ok, out, session, reason, new_notes) = self.review_gate(wf, rid, &step, out, session.unwrap_or_default(), &prev_out, &sessions);
@@ -865,6 +967,13 @@ impl Runner {
         )
     }
 
+    fn crash_prompt() -> String {
+        "You were interrupted while working on this step: the app running you closed before you finished. \
+         Everything you did earlier in this conversation, and the files you wrote, are still there: continue from them \
+         rather than starting over. When you're done, give your final result for this step."
+            .into()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_step(self: &Arc<Self>, wf: &Value, rid: &str, step: &Value, prev_out: &str, prev_session: &[String], notes: &str, extra: &str, revision: i64, loop_n: i64, prev_label: &str) -> Outcome {
         let (mut reason, mut out, mut session): (String, String, Option<String>) = Default::default();
@@ -872,9 +981,10 @@ impl Runner {
         let bash = s(step, "kind") == "bash";
         // "redo with my feedback" on a finished step: continue its conversation
         let pending = self.lock().resume.get_mut(rid).and_then(|m| m.remove(&step_id));
-        let (mut resume, mut steer, mut interrupted) = match pending.filter(|_| !bash) {
-            Some((sess, msg)) => (Some(sess), msg, false),
-            None => (None, String::new(), false),
+        // after a crash: continue the conversation of the attempt that was cut off
+        let (mut resume, mut steer, mut interrupted, mut crashed) = match pending.filter(|_| !bash) {
+            Some((sess, msg, crash)) => (Some(sess), msg, false, crash),
+            None => (None, String::new(), false, false),
         };
         let retries = step["retries"].as_i64().unwrap_or(0);
         let model = if b(step, "model") { s(step, "model") } else { s(wf, "model") };
@@ -899,10 +1009,15 @@ impl Runner {
             }
             let mut extra_steer = String::new();
             if resume.is_some() && !["claude", "ollama"].contains(&providers::split(&model).0.as_str()) {
-                extra_steer = format!("\n\n---\n{}", Self::steer_prompt(&steer, interrupted));
+                if !crashed {
+                    extra_steer = format!("\n\n---\n{}", Self::steer_prompt(&steer, interrupted));
+                }
                 resume = None; // this tool can't continue a conversation: start over, with the guidance added
+                crashed = false;
             }
-            let prompt = if resume.is_some() {
+            let prompt = if resume.is_some() && crashed {
+                Self::crash_prompt()
+            } else if resume.is_some() {
                 Self::steer_prompt(&steer, interrupted)
             } else {
                 let mut p = s(step, "prompt") + &agent_instructions(wf, step);
@@ -923,7 +1038,10 @@ impl Runner {
                 "replay": replay, "loop": loop_n, "input": last_chars(&prompt, 20000),
                 "inputModel": if model.is_empty() { "default".to_string() } else { model.clone() },
                 "status": "running", "started": now(), "ended": null, "cost": 0.0, "error": "", "output": ""});
-            if resume.is_some() || !extra_steer.is_empty() {
+            if crashed {
+                rec["continues"] = json!(resume);
+                rec["resumed"] = json!(true);
+            } else if resume.is_some() || !extra_steer.is_empty() {
                 rec["steer"] = json!(steer);
                 rec["continues"] = json!(resume);
             }
@@ -966,7 +1084,21 @@ impl Runner {
                 attempt -= 1; // steering doesn't use up a retry
                 continue;
             }
-            (resume, steer, interrupted) = (None, String::new(), false);
+            if crashed && !ok && !self.stopped(rid) {
+                // the cut-off conversation couldn't be continued (e.g. its transcript is gone): start the step over
+                let (error, output) = (format!("couldn't continue the interrupted conversation, so the step starts over: {r}"), last_chars(&out, 4000));
+                self.with_att(rid, &sess, |rec| {
+                    for (k, v) in [("status", json!("failed")), ("ended", json!(now())), ("cost", json!(cost)), ("error", json!(error)), ("output", json!(output))] {
+                        rec[k] = v;
+                    }
+                });
+                self.add_cost(rid, cost);
+                self.changed(rid);
+                (resume, steer, interrupted, crashed) = (None, String::new(), false, false);
+                attempt -= 1; // not the step's own failure, so no retry is used up
+                continue;
+            }
+            (resume, steer, interrupted, crashed) = (None, String::new(), false, false);
             if ok && b(step, "check") && !self.stopped(rid) {
                 (ok, r) = self.check(wf, step);
             }
@@ -1616,6 +1748,56 @@ impl Runner {
     }
 }
 
+/// A run whose process is gone mid-run: it can be resumed. Attempts that were working are marked interrupted.
+fn mark_interrupted(run: &mut Value) {
+    run["status"] = json!("interrupted");
+    run.as_object_mut().unwrap().shift_remove("external");
+    for a in run["attempts"].as_array_mut().into_iter().flatten() {
+        if s(a, "status") == "running" {
+            a["status"] = json!("interrupted");
+            a["error"] = json!("the app or terminal running it closed");
+        }
+    }
+}
+
+/// Where an interrupted run continues: the steps it finished (from its `resumeFrom` record, or for runs saved
+/// before that existed, each step's last successful attempt) are seeded and not run again; every other step of
+/// the workflow runs. A Claude step that was mid-flight continues that session; one waiting for review asks again.
+fn resume_point(run: &Value, steps: &[Value]) -> ResumePoint {
+    let ids: HashSet<String> = steps.iter().map(|st| s(st, "id")).collect();
+    let mut p = ResumePoint::default();
+    let last = |sid: &str| arr(run, "attempts").iter().rev().find(|a| s(a, "step") == sid).cloned();
+    if let Some(from) = run.get("resumeFrom").filter(|r| r.is_object()) {
+        for (sid, r) in from["steps"].as_object().into_iter().flatten().filter(|(k, _)| ids.contains(*k)) {
+            let session = r.get("session").and_then(Value::as_str).map(str::to_string);
+            p.seed.results.insert(sid.clone(), StepResult { ok: b(r, "ok"), out: s(r, "output"), session, reason: s(r, "reason"), notes: s(r, "notes") });
+        }
+        p.seed.loops = from["loops"].as_object().into_iter().flatten().map(|(k, v)| (k.clone(), v.as_i64().unwrap_or(0))).collect();
+        p.seed.hops = from["hops"].as_u64().unwrap_or(0) as usize;
+    } else {
+        for sid in &ids {
+            let Some(a) = last(sid).filter(|a| s(a, "status") == "ok") else { continue };
+            let rev = a.get("review").cloned().unwrap_or(json!({}));
+            if b(&rev, "status") && s(&rev, "status") != "approved" {
+                continue; // still to be reviewed (handled below)
+            }
+            let notes = if b(&rev, "status") { s(&rev, "feedback") } else { String::new() };
+            p.seed.results.insert(sid.clone(), StepResult { ok: true, out: s(&a, "output"), session: Some(s(&a, "session")), reason: String::new(), notes });
+        }
+    }
+    p.todo = ids.iter().filter(|sid| !p.seed.results.contains_key(*sid)).cloned().collect();
+    for sid in &p.todo {
+        let Some(a) = last(sid) else { continue };
+        let status = s(&a, "status");
+        if ["running", "interrupted"].contains(&status.as_str()) && s(&a, "kind") != "bash" && b(&a, "session") {
+            p.restart.insert(sid.clone(), s(&a, "session"));
+        } else if status == "ok" && a.get("review").map(|r| s(r, "status")) == Some("pending".into()) {
+            p.reviews.insert(sid.clone(), (s(&a, "output"), s(&a, "session")));
+        }
+    }
+    p
+}
+
 /// The user's own project folder (a run in a worktree works elsewhere).
 fn project_of(run: &Value) -> String {
     if b(run, "project") { s(run, "project") } else { s(run, "cwd") }
@@ -1713,4 +1895,149 @@ fn bash_log(att: &Value) -> Value {
                             "title": first_chars(&first_line(&e), 200), "body": e}));
     }
     json!({"entries": entries, "total": lines.len()})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn wait_for(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while !ok() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn dead_pid() -> u32 {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    fn step(id: &str, run: &str) -> Value {
+        json!({"id": id, "name": id, "kind": "bash", "run": run})
+    }
+
+    #[test]
+    fn resume_point_from_record() {
+        let steps = vec![step("a", ""), step("b", ""), step("c", ""), step("d", "")];
+        let run = json!({
+            "attempts": [
+                {"step": "a", "session": "s-a", "status": "ok", "output": "A"},
+                {"step": "b", "session": "s-b", "status": "ok", "output": "B", "review": {"status": "pending"}},
+                {"step": "c", "session": "s-c1", "status": "failed"},
+                {"step": "c", "session": "s-c2", "status": "interrupted"},
+                {"step": "d", "session": "s-d", "status": "interrupted", "kind": "bash"},
+            ],
+            "resumeFrom": {"steps": {"a": {"ok": true, "output": "A full", "session": "s-a", "notes": "n"}, "gone": {"ok": true}},
+                           "loops": {"c": 1, "@a": 1}, "hops": 4},
+        });
+        let p = resume_point(&run, &steps);
+        assert_eq!(p.seed.results.keys().collect::<Vec<_>>(), vec!["a"]); // a step no longer in the workflow is dropped
+        assert_eq!(p.seed.results["a"].out, "A full");
+        assert_eq!(p.seed.results["a"].notes, "n");
+        assert_eq!(p.seed.loops["c"], 1);
+        assert_eq!(p.seed.hops, 4);
+        assert_eq!(p.todo, HashSet::from(["b".to_string(), "c".to_string(), "d".to_string()]));
+        // the Claude step cut off mid-flight continues its own session; a command step starts over
+        assert_eq!(p.restart, HashMap::from([("c".to_string(), "s-c2".to_string())]));
+        // the step waiting for review asks again instead of running again
+        assert_eq!(p.reviews["b"], ("B".to_string(), "s-b".to_string()));
+    }
+
+    #[test]
+    fn resume_point_without_record() {
+        // runs saved before resumeFrom existed: each step's last successful attempt counts as done
+        let steps = vec![step("a", ""), step("b", ""), step("c", "")];
+        let run = json!({"attempts": [
+            {"step": "a", "session": "s-a", "status": "ok", "output": "A", "review": {"status": "approved", "feedback": "nice"}},
+            {"step": "b", "session": "s-b1", "status": "ok", "output": "B"},
+            {"step": "b", "session": "s-b2", "status": "running"},
+        ]});
+        let p = resume_point(&run, &steps);
+        assert_eq!(p.seed.results.len(), 1);
+        assert_eq!(p.seed.results["a"].notes, "nice");
+        assert_eq!(p.todo, HashSet::from(["b".to_string(), "c".to_string()]));
+        assert_eq!(p.restart["b"], "s-b2");
+    }
+
+    #[test]
+    fn mark_interrupted_marks_working_attempts() {
+        let mut run = json!({"status": "running", "external": true, "attempts": [{"status": "ok"}, {"status": "running"}]});
+        mark_interrupted(&mut run);
+        assert_eq!(run["status"], "interrupted");
+        assert!(run.get("external").is_none());
+        assert_eq!(run["attempts"][0]["status"], "ok");
+        assert_eq!(run["attempts"][1]["status"], "interrupted");
+    }
+
+    /// The acceptance test from the spec: the process dies during step 2 of 4; resuming finishes the run
+    /// without running step 1 again or counting its cost twice.
+    #[test]
+    fn interrupted_run_resumes_from_the_unfinished_step() {
+        let dir = std::env::temp_dir().join(format!("ag-resume-test-{}", hex_id(6))).to_string_lossy().into_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = join(&dir, "flow.yaml");
+        let raw = json!({"name": "Resume test", "cwd": dir, "steps": [
+            step("one", "echo ran >> one.count; echo first"),
+            step("two", "echo ran >> two.count; if [ -f go ]; then echo second; else sleep 30; fi"),
+            step("three", "echo \"$STEP_INPUT\" > three.in; echo third"),
+            step("four", "echo ran >> four.count; echo fourth"),
+        ]});
+        std::fs::write(&file, serde_yaml::to_string(&raw).unwrap()).unwrap();
+        let wf = read_file(&file, None).unwrap().0; // resuming reads the workflow from its file again
+        let wf = validate(&wf).unwrap();
+
+        // the first app: runs step 1, and is cut off while step 2 works
+        let first = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
+        let rid = first.start("", Some(wf.clone()), &json!({})).unwrap();
+        wait_for("step two to start", 20, || first.get_run(&rid).is_some_and(|r| arr(&r, "attempts").iter().any(|a| a["step"] == "two" && a["status"] == "running")));
+        wait_for("step two's command to start", 20, || is_file(&join(&dir, "two.count")));
+        let path = join(&run_dir(), &format!("{rid}.json"));
+        let mut saved = read_json(&path).unwrap();
+        assert_eq!(saved["resumeFrom"]["steps"]["one"]["output"].as_str().map(str::trim), Some("first"));
+        assert!(saved["resumeFrom"]["steps"].get("two").is_none());
+        // what a crash leaves on disk: still "running", its process gone. Step 1 cost something.
+        let crashed = format!("{rid}-crashed");
+        saved["id"] = json!(crashed);
+        saved["pid"] = json!(dead_pid());
+        saved["cost"] = json!(0.25);
+        write_json(&join(&run_dir(), &format!("{crashed}.json")), &saved).unwrap();
+        first.stop(&rid).unwrap();
+
+        // the app starts again: the run is interrupted, and resumes
+        let second = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
+        assert_eq!(s(&second.get_run(&crashed).unwrap(), "status"), "interrupted");
+        std::fs::write(join(&dir, "go"), "").unwrap();
+        second.resume(&crashed).unwrap();
+        assert!(second.resume(&crashed).is_err(), "a running run can't be resumed again");
+        wait_for("the resumed run to finish", 30, || second.get_run(&crashed).is_some_and(|r| !["running", "waiting"].contains(&s(&r, "status").as_str())));
+
+        let run = second.get_run(&crashed).unwrap();
+        assert_eq!(s(&run, "status"), "succeeded", "{}", s(&run, "error"));
+        let count = |f: &str| std::fs::read_to_string(join(&dir, f)).unwrap_or_default().lines().count();
+        assert_eq!(count("one.count"), 1, "step one ran again");
+        assert_eq!(count("two.count"), 2); // the cut-off try, then the resumed one
+        assert_eq!(count("four.count"), 1);
+        assert_eq!(std::fs::read_to_string(join(&dir, "three.in")).unwrap().trim(), "second"); // step 3 got step 2's new output
+        assert_eq!(f(&run, "cost"), 0.25, "cost counted twice");
+        assert_eq!(arr(&run, "attempts").iter().filter(|a| a["step"] == "one").count(), 1);
+        let two: Vec<String> = arr(&run, "attempts").iter().filter(|a| a["step"] == "two").map(|a| s(a, "status")).collect();
+        assert_eq!(two, ["interrupted", "ok"]);
+        assert!(run.get("resumeFrom").is_none());
+        assert_eq!(run["resumed"], 1);
+        // and it was saved that way
+        assert_eq!(s(&read_json(&join(&run_dir(), &format!("{crashed}.json"))).unwrap(), "status"), "succeeded");
+        wait_for("the first run to stop", 20, || first.get_run(&rid).is_some_and(|r| s(&r, "status") == "stopped"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_interrupted_runs_resume() {
+        let r = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
+        assert!(r.resume("no-such-run").is_err());
+    }
 }

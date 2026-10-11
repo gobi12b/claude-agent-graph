@@ -16,6 +16,12 @@ pub type Res<T> = Result<T, String>;
 pub fn home() -> String {
     static HOME: OnceLock<String> = OnceLock::new();
     HOME.get_or_init(|| {
+        if cfg!(test) {
+            // tests keep their runs and settings out of the real ~/.config
+            let dir = std::env::temp_dir().join(format!("agent-graph-test-home-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            return dir.to_string_lossy().into_owned();
+        }
         let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         std::env::var(var).ok().filter(|h| !h.is_empty()).unwrap_or_else(|| ".".into())
     })

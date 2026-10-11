@@ -106,8 +106,8 @@ pub fn find_workflow(wid: &str) -> Option<Value> {
 
 // ---- workflow files given on the command line --------------------------------------------------------
 
-const WF_KEYS: [&str; 18] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
-    "maxBudgetUsd", "judgeModel", "agents", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver"];
+const WF_KEYS: [&str; 19] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
+    "maxBudgetUsd", "judgeModel", "agents", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver", "autoResume"];
 const INPUT_KEYS: [&str; 5] = ["description", "type", "required", "default", "options"];
 const WORKTREE_KEYS: [&str; 4] = ["base", "keep", "setup", "copy"];
 const DELIVER_KEYS: [&str; 6] = ["branch", "commit", "message", "push", "pr", "when"];
@@ -610,6 +610,7 @@ pub fn validate(wf: &Value) -> Res<Value> {
         "isolation": isolation,
         "worktree": worktree,
         "deliver": deliver,
+        "autoResume": wf.get("autoResume").map(truthy).unwrap_or(false),
         "agents": agents,
         "steps": clean,
         "updated": if b(wf, "updated") { wf["updated"].clone() } else { json!(now()) },

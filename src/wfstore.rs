@@ -49,6 +49,7 @@ and comments you add here are kept when the app saves.
   deliver: turn the run's changes into a branch, one commit per step (needs isolation: worktree)
     {branch: agent-graph/{{ run.id }}, commit: perStep | squash, when: success | always,
      push: true, pr: {draft: true, title: …, body: summary, base: main}}
+  autoResume: true   when the app starts, continue runs that a crash or closed app cut off, without asking
 ";
 
 pub fn id_re() -> &'static Regex {
@@ -165,6 +166,9 @@ pub fn to_doc(wf: &Value) -> Value {
     }
     if b(wf, "judgeModel") {
         d.insert("judgeModel".into(), wf["judgeModel"].clone());
+    }
+    if b(wf, "autoResume") {
+        d.insert("autoResume".into(), json!(true));
     }
     if wf.get("inputs").is_some_and(|i| i.as_object().is_some_and(|o| !o.is_empty())) {
         let mut inputs = Map::new();

@@ -549,7 +549,7 @@
 const WINDOWS = [["Running now", 0], ["Last hour", 3600], ["Today", 86400], ["This week", 604800], ["All time", Infinity]];
 // plain words for the server's status / kind values
 const STATUS_WORD = { busy: "Working", running: "Working", idle: "Waiting for you", live: "Open", ended: "Closed", done: "Done",
-  succeeded: "Done", ok: "Done", failed: "Failed", stopped: "Stopped", waiting: "Needs your review", pending: "Not started yet", skipped: "Skipped", steered: "Steered by you" };
+  succeeded: "Done", ok: "Done", failed: "Failed", stopped: "Stopped", interrupted: "Interrupted", waiting: "Needs your review", pending: "Not started yet", skipped: "Skipped", steered: "Steered by you" };
 const KIND_WORD = { session: "Claude session", agent: "Helper agent", workflow: "Workflow", you: "You" };
 const word = (map, v) => map[v] || v || "";
 let windowSec = 86400;
@@ -1720,6 +1720,7 @@ function renderInspector() {
       <label class="f">Never allow <span class="hint">one rule per line</span><textarea data-k="disallowedTools" rows="3" placeholder="Bash(git push:*)">${esc(draft.disallowedTools.join("\n"))}</textarea></label>
       <label class="f">AI judge model <span class="hint">grades steps that have acceptance criteria</span><select data-k="judgeModel">${opts([["", "Haiku · cheapest (default)"], ["sonnet", "Sonnet · more thorough"], ["opus", "Opus · strictest"]], draft.judgeModel || "")}</select>
         <span class="hint">A judge that's a different model from the one doing the work is less likely to go easy on it.</span></label>
+      <label class="chk" style="margin:10px 0"><input type="checkbox" data-k="autoResume" ${draft.autoResume ? "checked" : ""}>Pick up runs cut off by a crash when the app starts again, without asking</label>
       </details>`;
   }
 }
@@ -1965,6 +1966,7 @@ runview.innerHTML = `
     <button class="btn" id="rvfolder" title="Open the folder this workflow runs in">Open folder</button>
     <button class="btn" id="rveditwf" title="Change this workflow's steps and settings. The next run uses your changes.">✎ Edit workflow</button>
     <button class="btn danger" id="rvstop">Stop</button>
+    <button class="btn pri" id="rvresume" title="The app or terminal running this closed before it finished. Continue from the first step that hadn't finished.">▶ Resume</button>
     <button class="btn pri" id="rvagain">Run again</button>
   </header>
   <div class="rvbody"><div class="rvgraph" id="rvgraph"><canvas id="rvc"></canvas>
@@ -2047,6 +2049,7 @@ function renderRun() {
   document.getElementById("rvmeta").innerHTML =
     `<span class="stchip ${normSt(r.status)}">${esc(word(STATUS_WORD, r.status))}</span> started ${new Date(r.started * 1000).toLocaleString()} · ${dur(took)} · ${fmtMoney(r.cost)}`;
   document.getElementById("rvstop").hidden = r.status !== "running" && r.status !== "waiting";
+  document.getElementById("rvresume").hidden = r.status !== "interrupted";
   document.getElementById("rvfolder").hidden = !r.cwd;
   document.getElementById("rveditwf").hidden = !workflows.some(w => w.id === r.workflowId);  // deleted workflows can't be edited
 
@@ -2858,6 +2861,11 @@ document.getElementById("rvstop").addEventListener("click", async e => {
   b.textContent = "Stop";
   try { await api("/api/runs/stop", { id: rv.id }); refreshRun(true); } catch (e) { document.getElementById("rvmsg").textContent = e.message; }
 });
+document.getElementById("rvresume").addEventListener("click", async e => {
+  e.currentTarget.disabled = true;
+  try { await api("/api/runs/resume", { id: rv.id }); refreshRun(true); } catch (err) { document.getElementById("rvmsg").textContent = err.message; }
+  e.currentTarget.disabled = false;
+});
 document.getElementById("rvagain").addEventListener("click", async () => {
   try { const id = await api("/api/runs/start", { id: rv.run.workflowId }); rv = null; openRun(id); }
   catch (e) { document.getElementById("rvmsg").textContent = e.message; }
@@ -2975,7 +2983,12 @@ function renderHome() {
       <div class="list">${runs.slice(0, 5).map(runRow).join("")}</div>` : ""}`;
 }
 // shared click handling for every page: navigation, "new", open run, show on map
-document.getElementById("main").addEventListener("click", e => {
+document.getElementById("main").addEventListener("click", async e => {
+  const rs = e.target.closest("[data-rresume]");
+  if (rs) {
+    e.stopPropagation(); rs.disabled = true;
+    try { await api("/api/runs/resume", { id: rs.dataset.rresume }); return openRun(rs.dataset.rresume); } catch (err) { rs.disabled = false; return alert(err.message); }
+  }
   const t = e.target.closest("[data-add], [data-go], [data-show], [data-openrun], [data-slog]");
   if (!t || t.closest("#app") || t.closest("#wfpane")) return;
   const d = t.dataset;
@@ -3033,15 +3046,16 @@ function runRow(r) {
     <div class="main"><div class="nm2">${esc(r.name)}</div><div class="sub2">${day(r.started)} · ${steps} step${steps === 1 ? "" : "s"} ran${r.error ? " · " + esc(r.error) : ""}</div></div>
     <div class="col">${dur(took)}</div><div class="col">${fmtMoney(r.cost)}</div>${r.external && (r.status === "running" || r.status === "waiting") ? `<span class="tag" title="Started with agent-graph run">⌨ in a terminal</span>` : ""}${runTag(r)}
     ${r.status === "waiting" ? `<button class="btn pri" data-openrun="${esc(r.id)}">Review now</button>` : ""}
+    ${r.status === "interrupted" ? `<button class="btn pri" data-rresume="${esc(r.id)}" title="It was cut off when the app or terminal closed. Continue from the first unfinished step.">▶ Resume</button>` : ""}
     ${r.status === "running" ? `<button class="btn ${runsUi.arm === r.id ? "danger" : ""}" data-rstop="${esc(r.id)}">${runsUi.arm === r.id ? "Click again to stop" : "Stop"}</button>` : ""}</div>`;
 }
 function renderRuns() {
   const el = document.getElementById("pg-runs");
-  const f = runsUi.filter, list = runs.filter(r => f === "all" || (f === "done" ? r.status === "succeeded" : f === "problem" ? r.status === "failed" || r.status === "stopped" : r.status === f));
+  const f = runsUi.filter, list = runs.filter(r => f === "all" || (f === "done" ? r.status === "succeeded" : f === "problem" ? ["failed", "stopped", "interrupted"].includes(r.status) : r.status === f));
   const seg = (k, l, n) => `<button class="${f === k ? "on" : ""}" data-rf="${k}">${l}${n ? ` (${n})` : ""}</button>`;
   const count = s => runs.filter(r => r.status === s).length;
   el.innerHTML = ehead("runs", workflows.length ? `<button class="btn lg" data-go="workflows">Start a workflow</button>` : "") +
-    `<div class="toolbar"><div class="seg2">${seg("all", "All")}${seg("running", "Running", count("running"))}${seg("waiting", "Needs review", count("waiting"))}${seg("done", "Finished")}${seg("problem", "Failed or stopped")}</div></div>` +
+    `<div class="toolbar"><div class="seg2">${seg("all", "All")}${seg("running", "Running", count("running"))}${seg("waiting", "Needs review", count("waiting"))}${seg("done", "Finished")}${seg("problem", "Failed, stopped or cut off")}</div></div>` +
     (list.length ? `<div class="list">${list.map(runRow).join("")}</div>`
       : `<div class="emptybox"><b>No runs here</b>${runs.length ? "Try another filter." : "Runs appear when you start a workflow with ▶ Run."}
         ${workflows.length ? "" : `<br><button class="btn pri lg" data-add="workflows">＋ Create a workflow</button>`}</div>`);

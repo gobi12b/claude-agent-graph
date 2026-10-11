@@ -78,7 +78,7 @@ Scored on how often the gap comes up in reviews and competitor comparisons (dema
 | G3 | Structured outputs and conditional routing | High | Medium | M | 8 | **P2** | Not started |
 | G4 | Triggers: schedule, file watch, webhook, GitHub | High | Medium | M | 6 | **P1** | Not started |
 | G5 | Git delivery: branch, commit, pull request | High | Medium | S | 3 | **P0** | ✅ Rust |
-| G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | 5 | **P1** | Not started |
+| G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | 5 | **P1** | ✅ Rust |
 | G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | 4 | **P1** | Not started |
 | G8 | Fan-out over a list (`forEach`) | Medium | Medium | M | 12 | **P3** | Not started |
 | G9 | Outbound notifications and remote approvals (Slack, Discord, webhook) | Medium | Medium | M | 9 | **P2** | Not started |
@@ -480,7 +480,8 @@ Updated 2026-10-04. Branch `rust-inputs-worktree-delivery` (based on `spec/marke
 | G2 Inputs and templating | ✅ Done in Rust | `src/template.rs`, validation in `src/workflows.rs`, runner, CLI, run form in `index.html` |
 | G1 Separate worktree per run | ✅ Done in Rust (worktree) | `src/worktree.rs`, `src/runner.rs`, run view in `index.html` |
 | G5 Branch, commit, PR | ✅ Done in Rust | `src/worktree.rs` (commits, branch, push, `gh pr create`), `src/runner.rs` |
-| Everything else (G3, G4, G6–G16) | Not started | |
+| G6 Durable runs | ✅ Done in Rust | `resumeFrom` record and `resume` in `src/runner.rs`, `agent-graph resume`, `/api/runs/resume`, Resume buttons in `index.html` |
+| Everything else (G3, G4, G7–G16) | Not started | |
 | Python version of G1, G2, G5 | Not started | The Python app warns about the new keys as unknown settings and ignores them |
 
 ### G2: inputs and templating
