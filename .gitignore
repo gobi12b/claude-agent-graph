@@ -6,3 +6,8 @@ target/
 build/
 *.egg-info/
 binaries/
+
+# graphify: commit only the graph and its report
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md

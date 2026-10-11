@@ -1,0 +1,18 @@
+#!/bin/sh
+# Rebuilds the code graph (graphify-out/) and adds it to this commit, so agents
+# can read code structure from it. No LLM or API key needed. Skip once with
+# `git commit --no-verify`.
+command -v graphify >/dev/null 2>&1 || {
+  echo "pre-commit: graphify isn't installed, so the code graph wasn't updated." >&2
+  echo "  Install it with: uv tool install graphifyy   (or: pipx install graphifyy)" >&2
+  exit 0
+}
+# Nothing to do if the commit only touches the graph itself.
+git diff --cached --name-only | grep -qv '^graphify-out/' || exit 0
+if graphify update . >/dev/null 2>&1; then
+  git add graphify-out/graph.json graphify-out/GRAPH_REPORT.md
+else
+  echo "pre-commit: 'graphify update .' failed; committing without a graph update." >&2
+  echo "  Run it by hand to see why (add --force after deleting a lot of code)." >&2
+fi
+exit 0

@@ -488,10 +488,23 @@ cargo test
 cargo clippy
 ```
 
-Turn on the git hooks once per clone. They check that commit messages follow [Conventional Commits](https://www.conventionalcommits.org) and run `cargo test` before each push:
+Turn on the git hooks once per clone. They check that commit messages follow [Conventional Commits](https://www.conventionalcommits.org), update the code graph on each commit and run `cargo test` before each push:
 
 ```sh
 git config core.hooksPath .githooks
+```
+
+The pre-commit hook also rebuilds the code graph in `graphify-out/` with [Graphify](https://github.com/Graphify-Labs/graphify) and adds it to the commit. It works offline with no API key. Install Graphify once (the hook skips with a hint if it's missing):
+
+```sh
+uv tool install graphifyy      # or: pipx install graphifyy
+```
+
+Run `graphify update .` after a pull to refresh the graph by hand. To merge `graph.json` without conflicts, register Graphify's merge driver once per clone:
+
+```sh
+git config merge.graphify.name "graphify graph.json union merge"
+git config merge.graphify.driver "graphify merge-driver %O %A %B"
 ```
 
 ```
