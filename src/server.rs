@@ -164,6 +164,8 @@ impl App {
             "/api/agents/save" => wfstore::save_user_agent(req(b, "agent")?, &opt("category").unwrap_or("My helpers".into()), opt("oldName").as_deref()),
             "/api/agents/delete" => wfstore::delete_user_agent(&req_str(b, "name")?, false),
             "/api/steps/save" => wfstore::save_user_step(opt("key").as_deref(), req(b, "step")?, opt("oldKey").as_deref()),
+            "/api/gates/save" => wfstore::save_user_gate(req(b, "gate")?, opt("oldName").as_deref()),
+            "/api/gates/delete" => wfstore::delete_user_gate(&req_str(b, "name")?, false),
             "/api/steps/delete" => wfstore::delete_user_step(&req_str(b, "key")?, false),
             "/api/ides/set" => workflows::set_ide(b.get("ide").unwrap_or(&Value::Null)),
             "/api/runs/ide" => r.open_ide(&id()?, opt("path").as_deref()),
@@ -262,10 +264,10 @@ impl App {
     }
 }
 
-const API_POST: [&str; 35] = [
+const API_POST: [&str; 37] = [
     "/api/runs/resume", "/api/runs/apply", "/api/runs/unapply", "/api/runs/discard", "/api/runs/deliver",
     "/kill", "/api/permissions", "/api/workflows/save", "/api/workflows/delete", "/api/workflows/open", "/api/agents/save",
-    "/api/agents/delete", "/api/steps/save", "/api/steps/delete", "/api/ides/set", "/api/runs/ide", "/api/runs/start",
+    "/api/agents/delete", "/api/steps/save", "/api/steps/delete", "/api/gates/save", "/api/gates/delete", "/api/ides/set", "/api/runs/ide", "/api/runs/start",
     "/api/runs/stop", "/api/runs/replay", "/api/folders/check", "/api/models/extra", "/api/folders/pick", "/api/runs/steer",
     "/api/runs/detail", "/api/runs/folder", "/api/runs/log", "/api/sessions/log", "/api/runs/review", "/api/runs/save",
     "/api/rewrite", "/api/runs/file", "/api/runs/changes", "/api/runs/rewind", "/api/runs/unrewind", "/api/runs/open",

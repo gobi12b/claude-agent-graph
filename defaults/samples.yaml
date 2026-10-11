@@ -6,7 +6,9 @@
 # Per sample: icon, name, description (one line), ask (the question shown when creating it; the answer
 # replaces {task} in the step prompts), example (placeholder text for that answer), and steps.
 # Per step: name, prompt, and optional review (pause for your review), retries, agents (helper roles
-# from agents.yaml), check (shell command that must succeed).
+# from agents.yaml), check (shell command that must succeed), judge (AI judge criteria), gates (gates from
+# gates.yaml the step must pass), loopBack ({to: <step name>, max: 2}).
+# A gate step has `gate: [gate names]` instead of a prompt: it checks everything the steps before it changed.
 
 samples:
 
@@ -31,8 +33,7 @@ samples:
           and match the existing code style.
         judge: |
           - The change fixes the root cause described in the plan, not just the visible symptom
-          - The change is small and focused: no unrelated files or refactors
-          - No debugging leftovers (print statements, commented-out code, TODOs added)
+        gates: [focused-change]
       - name: Test & fix
         retries: 2
         agents: [qa-engineer]
@@ -40,6 +41,9 @@ samples:
           Find out how this project runs its tests (README, package or build files) and run them.
           Add a test that would have caught this bug if there is a sensible place for one.
           Fix any failures caused by the change.
+      - name: Ready to hand over?
+        gate: [tests-included, sign-off]
+        loopBack: {to: Fix it, max: 2}
       - name: Summary
         prompt: |
           Write a short summary for the user, in plain language: what was wrong, what you changed
@@ -72,9 +76,9 @@ samples:
           Implement the feature described in docs/spec.md and docs/design.md. Keep changes focused,
           match the existing code style, and add tests for the new behaviour.
         judge: |
-          - Every requirement in docs/spec.md is implemented (name any that are missing)
           - The empty and error states from docs/design.md are handled
           - Tests were added that exercise the new behaviour
+        gates: [matches-spec, no-secrets]
       - name: Test & fix
         retries: 2
         prompt: |
@@ -84,6 +88,9 @@ samples:
         prompt: |
           Review all the changes made for this feature for bugs, edge cases and unclear code.
           Fix anything important, then list what you checked and what you changed.
+      - name: Ready to ship?
+        gate: [secure-change, docs-updated, sign-off]
+        loopBack: {to: Build it, max: 2}
 
   explain-project:
     icon: "📖"
@@ -142,6 +149,7 @@ samples:
         prompt: |
           Fix the high-severity findings from docs/security-report.md, and any others the user asked for in
           their review notes. Update the report to mark what was fixed.
+        gates: [secure-change, no-secrets]
 
   update-docs:
     icon: "📝"

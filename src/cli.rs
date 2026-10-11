@@ -325,6 +325,27 @@ fn ask_review(runner: &Runner, rid: &str, att: &Value) -> Option<()> {
     }
 }
 
+/// ⛩ one line per gate check under a finished step.
+fn print_gates(att: &Value, skip_pending: bool) {
+    for g in arr(att, "gates").iter().filter(|g| !(skip_pending && s(g, "status") == "pending")) {
+        let (mark, color) = match s(g, "status").as_str() {
+            "pass" => ("✓", "32"),
+            "fail" | "error" => ("✗", "31"),
+            "pending" => ("…", "35"),
+            _ => ("–", "2"),
+        };
+        let what = match s(g, "kind").as_str() {
+            "run" => "command".to_string(),
+            "judge" => match g.get("verdict").and_then(|v| v.get("score")) {
+                Some(score) => format!("AI judge {}/100", py_str(score)),
+                None => "AI judge".into(),
+            },
+            _ => "your approval".into(),
+        };
+        println!("      {} {}", c(color, &format!("⛩ {mark} {}", s(g, "gate"))), c("2", &format!("({what})")));
+    }
+}
+
 fn live(run: &Value) -> bool {
     matches!(s(run, "status").as_str(), "running" | "waiting") || b(run, "finishing")
 }
@@ -423,11 +444,15 @@ fn follow(runner: &Runner, rid: &str, yes: bool, quiet: bool, as_json: bool) -> 
         let run = runner.get_run(&rid).unwrap_or_default();
         for att in arr(&run, "attempts") {
             let (key, st) = (s(att, "session"), s(att, "status"));
-            if seen.get(&key) == Some(&st) {
+            let review = att.get("review").map(|r| s(r, "status")).unwrap_or_default();
+            let state = format!("{st}|{review}");
+            let before = seen.insert(key, state.clone());
+            if before.as_deref() == Some(state.as_str()) || as_json {
                 continue;
             }
-            seen.insert(key, st.clone());
-            if as_json {
+            if before.is_some_and(|b| b.starts_with(&format!("{st}|"))) {
+                // only the review changed: show how the approval gates came out
+                print_gates(&json!({"gates": arr(att, "gates").iter().filter(|g| g["kind"] == "approve").cloned().collect::<Vec<_>>()}), false);
                 continue;
             }
             let attempt = att["attempt"].as_i64().unwrap_or(1);
@@ -452,6 +477,9 @@ fn follow(runner: &Runner, rid: &str, yes: bool, quiet: bool, as_json: bool) -> 
                 "failed" => println!("  {} {label}: {}", c("31", "✗"), first_chars(&s(att, "error"), 300)),
                 "stopped" => println!("  {} {label} stopped", c("2", "■")),
                 _ => {}
+            }
+            if ["ok", "failed"].contains(&st.as_str()) {
+                print_gates(att, true);
             }
         }
         if s(&run, "status") == "waiting" {
@@ -491,7 +519,7 @@ fn follow(runner: &Runner, rid: &str, yes: bool, quiet: bool, as_json: bool) -> 
         let mut out = pick(&run, &["id", "name", "status", "started", "ended", "cost", "error", "inputs", "delivery", "worktree"]);
         let steps: Vec<Value> = arr(&run, "attempts")
             .iter()
-            .map(|a| Value::Object(pick(a, &["name", "status", "attempt", "cost", "error", "output", "judge", "usage"])))
+            .map(|a| Value::Object(pick(a, &["name", "status", "attempt", "cost", "error", "output", "judge", "gates", "usage"])))
             .collect();
         out.insert("steps".into(), json!(steps));
         print_json(&Value::Object(out));

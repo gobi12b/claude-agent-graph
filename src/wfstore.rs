@@ -68,6 +68,9 @@ pub fn project_subdir() -> String {
 pub fn user_agents() -> String {
     join(&config_dir(), "agents.yaml")
 }
+pub fn user_gates() -> String {
+    join(&config_dir(), "gates.yaml")
+}
 pub fn user_steps() -> String {
     join(&config_dir(), "steps.yaml")
 }
@@ -83,8 +86,9 @@ fn trash_dir() -> String {
 
 // ---- the built-in defaults (shipped inside the binary) ----------------------------------------
 
-const BUILTIN: [(&str, &str); 3] = [
+const BUILTIN: [(&str, &str); 4] = [
     ("agents.yaml", include_str!("../defaults/agents.yaml")),
+    ("gates.yaml", include_str!("../defaults/gates.yaml")),
     ("steps.yaml", include_str!("../defaults/steps.yaml")),
     ("samples.yaml", include_str!("../defaults/samples.yaml")),
 ];
@@ -130,7 +134,7 @@ pub fn defaults_dir() -> String {
 
 // ---- workflow dict <-> YAML document ------------------------------------------------------------
 
-fn step_defaults() -> [(&'static str, Value); 9] {
+fn step_defaults() -> [(&'static str, Value); 10] {
     [
         ("model", json!("")),
         ("retries", json!(0)),
@@ -138,6 +142,7 @@ fn step_defaults() -> [(&'static str, Value); 9] {
         ("judge", json!("")),
         ("review", json!(false)),
         ("agents", json!([])),
+        ("gates", json!([])),
         ("onSuccess", json!("next")),
         ("onFailure", json!("stop")),
         ("loopBack", Value::Null),
@@ -170,6 +175,7 @@ pub fn to_doc(wf: &Value) -> Value {
     if b(wf, "autoResume") {
         d.insert("autoResume".into(), json!(true));
     }
+    crate::guard::to_doc(wf, &mut d);
     if wf.get("inputs").is_some_and(|i| i.as_object().is_some_and(|o| !o.is_empty())) {
         let mut inputs = Map::new();
         for (name, spec) in wf["inputs"].as_object().unwrap() {
@@ -209,6 +215,13 @@ pub fn to_doc(wf: &Value) -> Value {
         }
         d.insert("agents".into(), Value::Object(agents));
     }
+    if b(wf, "gates") {
+        let mut gates = Map::new();
+        for g in arr(wf, "gates") {
+            gates.insert(py_str(&g["name"]), gate_doc(g));
+        }
+        d.insert("gates".into(), Value::Object(gates));
+    }
     let mut steps = vec![];
     let mut prev: Option<String> = None;
     for s in arr(wf, "steps") {
@@ -221,8 +234,21 @@ pub fn to_doc(wf: &Value) -> Value {
                 out.insert("dependsOn".into(), deps.clone());
             }
         }
-        let bash = s.get("kind").and_then(Value::as_str) == Some("bash");
-        if bash {
+        let kind = s.get("kind").and_then(Value::as_str).unwrap_or("claude");
+        let bash = kind == "bash";
+        let gate = kind == "gate";
+        if gate {
+            // a gate step: the gates it checks (`gate: tests-pass` / `gate: [a, b]`), or its own checks inline
+            let names = arr(s, "gates").to_vec();
+            if s.get("gate").is_some_and(Value::is_object) {
+                out.insert("gate".into(), gate_doc(&s["gate"]));
+                if !names.is_empty() {
+                    out.insert("gates".into(), json!(names));
+                }
+            } else {
+                out.insert("gate".into(), if names.len() == 1 { names[0].clone() } else { json!(names) });
+            }
+        } else if bash {
             // shell step: just the command (no Claude, no cost)
             out.insert("run".into(), s["run"].clone());
             if s.get("timeout").is_some_and(|t| truthy(t) && t.as_i64() != Some(1800)) {
@@ -232,16 +258,37 @@ pub fn to_doc(wf: &Value) -> Value {
             out.insert("prompt".into(), s["prompt"].clone());
         }
         for (k, default) in step_defaults() {
-            let v = s.get(k).cloned().unwrap_or_else(|| default.clone());
-            if v != default && !(bash && (k == "model" || k == "agents")) {
+            let mut v = s.get(k).cloned().unwrap_or_else(|| default.clone());
+            if k == "loopBack" && v.get("when").and_then(Value::as_str) == Some("failure") {
+                v.as_object_mut().unwrap().shift_remove("when"); // the default
+            }
+            if v != default && !((bash || gate) && (k == "model" || k == "agents")) && !(gate && k == "gates") {
                 out.insert(k.into(), v);
             }
         }
+        crate::guard::to_doc(s, &mut out);
         steps.push(Value::Object(out));
         prev = Some(py_str(&s["id"]));
     }
     d.insert("steps".into(), Value::Array(steps));
     Value::Object(d)
+}
+
+/// A gate as written to disk: only the checks it has.
+fn gate_doc(g: &Value) -> Value {
+    let mut spec = Map::new();
+    for k in ["description", "run", "judge"] {
+        if b(g, k) {
+            spec.insert(k.into(), g[k].clone());
+        }
+    }
+    if b(g, "run") && g.get("timeout").and_then(Value::as_i64).is_some_and(|t| t != crate::workflows::GATE_TIMEOUT) {
+        spec.insert("timeout".into(), g["timeout"].clone());
+    }
+    if b(g, "approve") {
+        spec.insert("approve".into(), json!(true));
+    }
+    Value::Object(spec)
 }
 
 /// The keys of a mapping whose values differ from the defaults.
@@ -277,6 +324,10 @@ pub fn from_doc(doc: Value, wid: &str) -> Res<Value> {
         }
     }
     wf.insert("agents".into(), Value::Array(agents));
+    if wf.contains_key("gates") {
+        let gates = crate::workflows::gate_list(wf.get("gates"));
+        wf.insert("gates".into(), Value::Array(gates));
+    }
     let Some(Value::Array(steps)) = wf.get_mut("steps") else {
         return err("“steps” should be a list.");
     };
@@ -284,8 +335,10 @@ pub fn from_doc(doc: Value, wid: &str) -> Res<Value> {
         let Value::Object(s) = s else {
             return Err(format!("Step {} should be a mapping (id, name, prompt…).", i + 1));
         };
-        if let Some(Value::String(a)) = s.get("agents").cloned() {
-            s.insert("agents".into(), json!([a]));
+        for k in ["agents", "gates"] {
+            if let Some(Value::String(a)) = s.get(k).cloned() {
+                s.insert(k.into(), json!([a]));
+            }
         }
         if !opt_truthy(s.get("id")) {
             let base = s.get("name").filter(|n| truthy(n)).map(py_str).unwrap_or_else(|| format!("step-{}", i + 1));
@@ -600,15 +653,16 @@ fn read_text(path: &str) -> Option<String> {
 
 pub fn default_files() -> Value {
     let dd = defaults_dir();
-    json!({"agents": join(&dd, "agents.yaml"), "steps": join(&dd, "steps.yaml"),
-           "userAgents": user_agents(), "userSteps": user_steps()})
+    json!({"agents": join(&dd, "agents.yaml"), "steps": join(&dd, "steps.yaml"), "gates": join(&dd, "gates.yaml"),
+           "userAgents": user_agents(), "userSteps": user_steps(), "userGates": user_gates()})
 }
 
 /// The agent library and step templates: app defaults, then your files on top.
 pub fn load_defaults() -> Value {
     let dd = defaults_dir();
     let (agents_file, steps_file, samples_file) = (join(&dd, "agents.yaml"), join(&dd, "steps.yaml"), join(&dd, "samples.yaml"));
-    let key: Vec<(String, Option<f64>)> = [&agents_file, &steps_file, &user_agents(), &user_steps(), &samples_file]
+    let gates_file = join(&dd, "gates.yaml");
+    let key: Vec<(String, Option<f64>)> = [&agents_file, &steps_file, &user_agents(), &user_steps(), &samples_file, &gates_file, &user_gates()]
         .into_iter()
         .filter(|f| exists(f))
         .map(|f| (f.clone(), mtime(f)))
@@ -702,8 +756,25 @@ pub fn load_defaults() -> Value {
         }
         Err(e) => errors.push(json!({"name": tilde(&samples_file), "file": samples_file, "error": e})),
     }
+    // the gate library: built-in gates, then yours (same name replaces)
+    let mut gates: Vec<Value> = vec![];
+    for path in [&gates_file, &user_gates()] {
+        let mine = *path == user_gates();
+        match read_yaml(path) {
+            Ok(doc) => {
+                for mut g in crate::workflows::gate_list(doc.get("gates")) {
+                    let overrides = mine && gates.iter().any(|x| x["name"] == g["name"]);
+                    gates.retain(|x| x["name"] != g["name"]);
+                    g["source"] = json!(if mine { "user" } else { "builtin" });
+                    g["overrides"] = json!(overrides);
+                    gates.push(g);
+                }
+            }
+            Err(e) => errors.push(json!({"name": tilde(path), "file": path, "error": e})),
+        }
+    }
     categories.retain(|c| !arr(c, "agents").is_empty());
-    let result = json!({"categories": categories, "steps": steps, "errors": errors, "samples": samples, "files": default_files()});
+    let result = json!({"categories": categories, "steps": steps, "gates": gates, "errors": errors, "samples": samples, "files": default_files()});
     *DEFAULTS_CACHE.lock().unwrap() = Some((key, result.clone()));
     result
 }
@@ -825,6 +896,46 @@ pub fn save_user_step(key: Option<&str>, step: &Value, old_key: Option<&str>) ->
     Ok(load_defaults())
 }
 
+/// Add or replace a gate in your own library (~/.config/claude-agent-graph/gates.yaml).
+pub fn save_user_gate(gate: &Value, old_name: Option<&str>) -> Res<Value> {
+    let name = s(gate, "name");
+    if !agent_name_re().is_match(&name) {
+        return err("Gate names use lowercase letters, digits and dashes, and start with a letter (e.g. tests-pass).");
+    }
+    if s(gate, "run").trim().is_empty() && s(gate, "judge").trim().is_empty() && !b(gate, "approve") {
+        return err("Give the gate something to check: a command, acceptance criteria or your approval.");
+    }
+    if let Some(old) = old_name.filter(|o| !o.is_empty() && *o != name) {
+        delete_user_gate(old, true)?;
+    }
+    let (text, mut doc) = user_doc(&user_gates());
+    if !doc.get("gates").is_some_and(Value::is_object) {
+        doc["gates"] = json!({});
+    }
+    doc["gates"].as_object_mut().unwrap().insert(name, gate_doc(gate));
+    dump_user(
+        &user_gates(),
+        text.as_deref(),
+        &doc,
+        "Your own gates. Same shape as defaults/gates.yaml in the app;\na gate with the same name as a default one replaces it.",
+    )?;
+    Ok(load_defaults())
+}
+
+pub fn delete_user_gate(name: &str, missing_ok: bool) -> Res<Value> {
+    let (text, mut doc) = user_doc(&user_gates());
+    if let Some(gates) = doc.get_mut("gates").and_then(Value::as_object_mut) {
+        if gates.shift_remove(name).is_some() {
+            dump_user(&user_gates(), text.as_deref(), &doc, "")?;
+            return Ok(load_defaults());
+        }
+    }
+    if missing_ok {
+        return Ok(load_defaults());
+    }
+    err("Only gates you made can be deleted; built-in ones stay.")
+}
+
 pub fn delete_user_step(key: &str, missing_ok: bool) -> Res<Value> {
     let (text, mut doc) = user_doc(&user_steps());
     if let Some(steps) = doc.get_mut("steps").and_then(Value::as_object_mut) {
@@ -845,7 +956,7 @@ static VERSION: LazyLock<Mutex<(u64, Option<Vec<(String, Option<f64>, u64)>>)>> 
 pub fn version() -> u64 {
     let dd = defaults_dir();
     let mut sig = vec![];
-    for path in workflow_files().into_iter().chain([join(&dd, "agents.yaml"), join(&dd, "steps.yaml"), user_agents(), user_steps()]) {
+    for path in workflow_files().into_iter().chain([join(&dd, "agents.yaml"), join(&dd, "steps.yaml"), join(&dd, "gates.yaml"), user_agents(), user_steps(), user_gates()]) {
         if let Ok(m) = std::fs::metadata(&path) {
             sig.push((path, m.modified().ok().map(to_secs), m.len()));
         }

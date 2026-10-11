@@ -7,6 +7,7 @@
 
 mod cli;
 mod compat;
+mod guard;
 mod providers;
 mod quality;
 mod runner;

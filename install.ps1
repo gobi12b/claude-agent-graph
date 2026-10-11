@@ -5,6 +5,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # much faster downloads
 
 $Base = if ($env:AGENT_GRAPH_BASE) { $env:AGENT_GRAPH_BASE } else { "https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main" }
+$Release = if ($env:AGENT_GRAPH_RELEASE) { $env:AGENT_GRAPH_RELEASE } else { "https://github.com/gobi12b/claude-agent-graph/releases/latest/download" }
 $Dir = Join-Path $env:LOCALAPPDATA "Programs\claude-agent-graph"
 $Name = "agent-graph-windows-x86_64.exe"  # also runs on Windows on ARM, through its x64 emulation
 
@@ -21,8 +22,8 @@ New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 $Exe = Join-Path $Dir "agent-graph.exe"
 $Tmp = Join-Path $Dir "agent-graph.download"
 Say "Downloading $Name"
-Invoke-WebRequest -UseBasicParsing -Uri "$Base/binaries/$Name" -OutFile $Tmp
-$Sums = (Invoke-WebRequest -UseBasicParsing -Uri "$Base/binaries/SHA256SUMS").Content
+Invoke-WebRequest -UseBasicParsing -Uri "$Release/$Name" -OutFile $Tmp
+$Sums = (Invoke-WebRequest -UseBasicParsing -Uri "$Release/SHA256SUMS").Content
 $Want = ($Sums -split "`n" | Where-Object { $_ -match " $([regex]::Escape($Name))\s*$" } | ForEach-Object { ($_ -split " ")[0] }) | Select-Object -First 1
 $Got = (Get-FileHash -Algorithm SHA256 $Tmp).Hash.ToLower()
 if ($Want -and $Want -ne $Got) { Remove-Item $Tmp; throw "$Name doesn't match its checksum; try again later." }

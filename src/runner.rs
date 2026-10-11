@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use crate::util::*;
 use crate::watcher::Graph;
 use crate::workflows::{self, descendants, find_workflow, read_file, topo_order, validate, BASH_TIMEOUT};
+use crate::guard::{self, Guard};
 use crate::{compat, providers, quality, template, worktree};
 
 const MAX_HOPS: usize = 50; // guards against workflows whose directions loop forever
@@ -484,10 +485,14 @@ impl Runner {
     pub fn log(&self, rid: &str, session: &str) -> Res<Value> {
         let run = self.detail(rid)?;
         let att = arr(&run, "attempts").iter().find(|a| a["session"] == session).ok_or("That session isn't part of this run.")?;
-        if s(att, "kind") == "bash" {
-            return Ok(bash_log(att));
+        let mut log = if s(att, "kind") == "bash" { bash_log(att) } else { self.entries(self.graph.session_paths(session), 400) };
+        if let Some(r) = guard::Redactor::from_record(att.get("redact")) {
+            // Claude's own transcript isn't ours to rewrite, so mask it when it's shown
+            for e in log["entries"].as_array_mut().into_iter().flatten() {
+                r.redact_entry(e);
+            }
         }
-        Ok(self.entries(self.graph.session_paths(session), 400))
+        Ok(log)
     }
 
     /// Recent transcript activity of any session (not just workflow steps) and its helpers, oldest first.
@@ -865,7 +870,7 @@ impl Runner {
             None => self.run_step(wf, rid, &step, &prev_out, &sessions, &notes, extra, 0, loop_n, label),
         };
         let mut new_notes = String::new();
-        if ok && b(&step, "review") && !self.stopped(rid) {
+        if ok && (b(&step, "review") || wants_approval(wf, &step)) && !self.stopped(rid) {
             (ok, out, session, reason, new_notes) = self.review_gate(wf, rid, &step, out, session.unwrap_or_default(), &prev_out, &sessions);
         }
         StepResult { ok, out, session, reason, notes: new_notes }
@@ -933,6 +938,32 @@ impl Runner {
                 }
                 (decision, feedback)
             };
+            let verdict = match decision.as_str() {
+                "approve" => ("pass", if feedback.is_empty() { "approved by you".to_string() } else { format!("approved by you: {feedback}") }),
+                "stop" => ("fail", "you stopped the workflow here".to_string()),
+                _ => ("fail", format!("you asked for changes: {feedback}")),
+            };
+            let gate_step = s(step, "kind") == "gate";
+            self.with_att(rid, &session, |rec| {
+                for g in rec.get_mut("gates").and_then(Value::as_array_mut).into_iter().flatten() {
+                    if g["kind"] == "approve" {
+                        g["status"] = json!(verdict.0);
+                        g["detail"] = json!(verdict.1);
+                    }
+                }
+                if gate_step {
+                    rec["output"] = json!(gate_summary(arr(rec, "gates")));
+                }
+            });
+            if decision == "revise" && s(step, "kind") == "gate" {
+                self.with_att(rid, &session, |rec| {
+                    rec["review"] = json!({"status": "changes", "feedback": feedback, "t": now()});
+                    rec["status"] = json!("failed");
+                    rec["error"] = json!(format!("Sent back at the gate: {feedback}"));
+                });
+                self.changed(rid);
+                return (false, out, Some(session), format!("at the gate “{}”, you asked for changes: {feedback}", s(step, "name")), String::new());
+            }
             if decision == "stop" {
                 self.with_run(rid, |r| r["stop"] = json!(true));
                 self.with_att(rid, &session, |rec| rec["review"] = json!({"status": "stopped", "feedback": feedback, "t": now()}));
@@ -979,6 +1010,7 @@ impl Runner {
         let (mut reason, mut out, mut session): (String, String, Option<String>) = Default::default();
         let step_id = s(step, "id");
         let bash = s(step, "kind") == "bash";
+        let gate = s(step, "kind") == "gate";
         // "redo with my feedback" on a finished step: continue its conversation
         let pending = self.lock().resume.get_mut(rid).and_then(|m| m.remove(&step_id));
         // after a crash: continue the conversation of the attempt that was cut off
@@ -988,6 +1020,9 @@ impl Runner {
         };
         let retries = step["retries"].as_i64().unwrap_or(0);
         let model = if b(step, "model") { s(step, "model") } else { s(wf, "model") };
+        let guard = Guard::for_step(wf, step);
+        let mut spent = 0.0; // the step's budget covers all its attempts
+        let mut protected = None; // protected files as they were when this attempt (or the steered one it continues) began
         let mut attempt = 0;
         while attempt < retries + 1 {
             attempt += 1;
@@ -996,6 +1031,19 @@ impl Runner {
             }
             let sess = uuid::Uuid::new_v4().to_string();
             session = Some(sess.clone());
+            if gate {
+                // a gate step does no work: it checks what the steps before it did, and passes their output on
+                let (ok, r) = self.run_gate_step(wf, rid, step, prev_out, attempt, revision, loop_n, &sess, prev_session, &reason);
+                reason = r;
+                if ok {
+                    return (true, prev_out.to_string(), session, String::new());
+                }
+                if self.stopped(rid) {
+                    return (false, prev_out.to_string(), session, "stopped".into());
+                }
+                out = prev_out.to_string();
+                continue;
+            }
             if bash {
                 let (ok, o, r) = self.run_bash(wf, rid, step, prev_out, notes, attempt, revision, loop_n, &sess, prev_session, &reason);
                 (out, reason) = (o, r);
@@ -1005,7 +1053,15 @@ impl Runner {
                 if self.stopped(rid) {
                     return (false, out, session, "stopped".into());
                 }
+                if Guard::final_failure(&reason) {
+                    break;
+                }
                 continue;
+            }
+            let budget_left = guard.budget.map(|b| b - spent);
+            if budget_left.is_some_and(|left| left <= 0.0) {
+                reason = format!("{}: it spent ${spent:.2} of its ${:.2} budget", guard::LIMIT_HIT, guard.budget.unwrap_or(0.0));
+                break;
             }
             let mut extra_steer = String::new();
             if resume.is_some() && !["claude", "ollama"].contains(&providers::split(&model).0.as_str()) {
@@ -1035,15 +1091,18 @@ impl Runner {
             };
             let replay = self.with_run(rid, |r| r.get("replay").and_then(Value::as_i64).unwrap_or(0));
             let mut rec = json!({"step": step_id, "name": step["name"], "attempt": attempt, "revision": revision, "session": sess,
-                "replay": replay, "loop": loop_n, "input": last_chars(&prompt, 20000),
+                "replay": replay, "loop": loop_n, "input": last_chars(&guard.redact(&prompt), 20000),
                 "inputModel": if model.is_empty() { "default".to_string() } else { model.clone() },
                 "status": "running", "started": now(), "ended": null, "cost": 0.0, "error": "", "output": ""});
             if crashed {
                 rec["continues"] = json!(resume);
                 rec["resumed"] = json!(true);
             } else if resume.is_some() || !extra_steer.is_empty() {
-                rec["steer"] = json!(steer);
+                rec["steer"] = json!(guard.redact(&steer));
                 rec["continues"] = json!(resume);
+            }
+            if let Some(r) = guard.record() {
+                rec["redact"] = r;
             }
             self.with_run(rid, |r| {
                 r["attempts"].as_array_mut().unwrap().push(rec);
@@ -1058,10 +1117,14 @@ impl Runner {
             let before = quality::snapshot(&s(wf, "cwd")); // checkpoint: lets the user see this step's diff and rewind it
             self.with_att(rid, &sess, |rec| rec["before"] = json!(before));
             self.changed(rid);
+            if !interrupted || protected.is_none() {
+                protected = Some(guard::fingerprint(&s(wf, "cwd"), &guard.protect));
+            }
 
-            let (ok0, o, r, mut cost) = self.invoke(wf, rid, step, &prompt, &sess, resume.as_deref());
+            let (ok0, o, r, mut cost) = self.invoke(wf, rid, step, &prompt, &sess, resume.as_deref(), &guard, budget_left);
             let (mut ok, mut r) = (ok0, r);
             out = o;
+            spent += cost;
             let after = if before.is_some() { quality::snapshot(&s(wf, "cwd")) } else { None };
             let usage = self.lock().usage.remove(&sess).unwrap_or(Value::Null);
             self.with_att(rid, &sess, |rec| {
@@ -1071,7 +1134,7 @@ impl Runner {
             let steered = self.lock().steer.get_mut(rid).and_then(|m| m.remove(&step_id));
             if let Some(msg) = steered.filter(|_| !self.stopped(rid)) {
                 // the user steered it mid-step: continue with their message
-                let output = last_chars(&out, 4000);
+                let output = last_chars(&guard.redact(&out), 4000);
                 self.with_att(rid, &sess, |rec| {
                     for (k, v) in [("status", json!("steered")), ("ended", json!(now())), ("cost", json!(cost)), ("error", json!("")), ("output", json!(output))] {
                         rec[k] = v;
@@ -1086,7 +1149,7 @@ impl Runner {
             }
             if crashed && !ok && !self.stopped(rid) {
                 // the cut-off conversation couldn't be continued (e.g. its transcript is gone): start the step over
-                let (error, output) = (format!("couldn't continue the interrupted conversation, so the step starts over: {r}"), last_chars(&out, 4000));
+                let (error, output) = (format!("couldn't continue the interrupted conversation, so the step starts over: {}", guard.redact(&r)), last_chars(&guard.redact(&out), 4000));
                 self.with_att(rid, &sess, |rec| {
                     for (k, v) in [("status", json!("failed")), ("ended", json!(now())), ("cost", json!(cost)), ("error", json!(error)), ("output", json!(output))] {
                         rec[k] = v;
@@ -1099,6 +1162,12 @@ impl Runner {
                 continue;
             }
             (resume, steer, interrupted, crashed) = (None, String::new(), false, false);
+            // checked even when Claude says it succeeded: the files are the evidence
+            let touched = guard::violations(protected.as_ref().unwrap(), &guard::fingerprint(&s(wf, "cwd"), &guard.protect));
+            if !touched.is_empty() {
+                (ok, r) = (false, guard::protect_reason(&touched, before.is_some()));
+                self.with_att(rid, &sess, |rec| rec["protected"] = json!(touched));
+            }
             if ok && b(step, "check") && !self.stopped(rid) {
                 (ok, r) = self.check(wf, step);
             }
@@ -1106,10 +1175,21 @@ impl Runner {
                 let (jok, jr, jc) = self.judge(wf, rid, step, &sess, &out);
                 (ok, r) = (jok, jr);
                 cost += jc;
+                spent += jc;
+            }
+            if let Some(budget) = guard.budget.filter(|b| spent > *b + 1e-9) {
+                if !Guard::final_failure(&r) {
+                    (ok, r) = (false, format!("{}: it spent ${spent:.2} of its ${budget:.2} budget", guard::LIMIT_HIT));
+                }
+            }
+            if ok && b(step, "gates") && !self.stopped(rid) {
+                let (gok, gr, gc) = self.attached_gates(wf, rid, step, &sess, &out);
+                (ok, r) = (gok, gr);
+                cost += gc;
             }
             reason = r;
             let status = if ok { "ok" } else if self.stopped(rid) { "stopped" } else { "failed" };
-            let (error, output) = (if ok { String::new() } else { reason.clone() }, last_chars(&out, 4000));
+            let (error, output) = (if ok { String::new() } else { guard.redact(&reason) }, last_chars(&guard.redact(&out), 4000));
             self.with_att(rid, &sess, |rec| {
                 for (k, v) in [("status", json!(status)), ("ended", json!(now())), ("cost", json!(cost)), ("error", json!(error)), ("output", json!(output))] {
                     rec[k] = v;
@@ -1119,6 +1199,9 @@ impl Runner {
             self.changed(rid);
             if ok {
                 return (true, out, session, String::new());
+            }
+            if Guard::final_failure(&reason) {
+                break;
             }
         }
         (false, out, session, reason)
@@ -1217,7 +1300,9 @@ impl Runner {
     }
 
     /// resume: continue that session's conversation (steering), saved under this new session id.
-    fn invoke(&self, wf: &Value, rid: &str, step: &Value, prompt: &str, session: &str, resume: Option<&str>) -> (bool, String, String, f64) {
+    /// guard: the step's limits and protected paths; budget_left: what remains of its budget.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke(&self, wf: &Value, rid: &str, step: &Value, prompt: &str, session: &str, resume: Option<&str>, guard: &Guard, budget_left: Option<f64>) -> (bool, String, String, f64) {
         let model = if b(step, "model") { s(step, "model") } else { s(wf, "model") };
         let (provider, name) = providers::split(&model);
         if let Err(e) = providers::check_ready(&provider, &name) {
@@ -1241,8 +1326,17 @@ impl Runner {
             if provider == "ollama" {
                 env = providers::command("ollama", &name, "", "", None).map(|c| c.1).unwrap_or_default();
             }
-            if b(wf, "maxBudgetUsd") && provider == "claude" {
-                args.extend(["--max-budget-usd".into(), py_str(&wf["maxBudgetUsd"])]);
+            // maxBudgetUsd caps each attempt; limits.budgetUsd caps the whole step, so pass what's left of it
+            let per_attempt = wf.get("maxBudgetUsd").and_then(Value::as_f64);
+            let cap = match (budget_left, per_attempt) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            if let Some(cap) = cap.filter(|_| provider == "claude") {
+                args.extend(["--max-budget-usd".into(), py_str(&json!(cap))]);
+            }
+            if let Some(n) = guard.max_turns {
+                args.extend(["--max-turns".into(), n.to_string()]);
             }
             if !agents.is_empty() {
                 let mut defs = Map::new();
@@ -1270,8 +1364,10 @@ impl Runner {
             if !allowed.is_empty() {
                 args.extend(["--allowedTools".into(), allowed.join(",")]);
             }
-            if b(wf, "disallowedTools") {
-                args.extend(["--disallowedTools".into(), str_list(wf, "disallowedTools").join(",")]);
+            let mut disallowed = str_list(wf, "disallowedTools");
+            disallowed.extend(guard.disallowed_rules()); // protected paths are refused up front, and checked after
+            if !disallowed.is_empty() {
+                args.extend(["--disallowedTools".into(), disallowed.join(",")]);
             }
         } else {
             // Gemini CLI / Codex CLI: no subagents, so the helpers' instructions go into the prompt
@@ -1295,12 +1391,16 @@ impl Runner {
             Err(e) => return (false, String::new(), format!("couldn't start {tool}: {e}"), 0.0),
         };
         let proc = self.register(rid, Some(session), child.id());
-        let result = collect(&mut child, Some(&prompt), None, |_| {});
+        let result = collect(&mut child, Some(&prompt), guard.timeout.map(Duration::from_secs), |_| {});
         self.unregister(rid, Some(session), &proc);
         let Output { code, stdout, stderr } = match result {
             Ok(o) => o,
             Err(e) => return (false, String::new(), format!("{tool} failed: {e}"), 0.0),
         };
+        if code.is_none() && !self.stopped(rid) {
+            let t = guard::format_duration(guard.timeout.unwrap_or(0));
+            return (false, last_chars(stdout.trim(), 4000), format!("{}: it was still running after {t}, so it was stopped", guard::LIMIT_HIT), 0.0);
+        }
         let code = code.unwrap_or(-1);
         let tail = || last_chars((if stderr.trim().is_empty() { &stdout } else { &stderr }).trim(), 400);
         if provider == "gemini" || provider == "gpt" {
@@ -1324,6 +1424,11 @@ impl Runner {
         let out = s(&res, "result");
         let cost = if provider == "claude" { f(&res, "total_cost_usd") } else { 0.0 }; // local models are free
         self.lock().usage.insert(session.into(), workflows::usage(&res));
+        match s(&res, "subtype").as_str() {
+            "error_max_turns" => return (false, out, format!("{}: it used its {} turns", guard::LIMIT_HIT, guard.max_turns.map(|n| n.to_string()).unwrap_or("allowed".into())), cost),
+            "error_max_budget_usd" => return (false, out, format!("{}: it reached its spending limit (${cost:.2} this attempt)", guard::LIMIT_HIT), cost),
+            _ => {}
+        }
         if code != 0 || b(&res, "is_error") {
             return (false, out.clone(), format!("{}: {}", s_or(&res, "subtype", "error"), last_chars(&out, 400)), cost);
         }
@@ -1345,15 +1450,22 @@ impl Runner {
         let _ = std::fs::create_dir_all(run_dir());
         let log_path = join(&run_dir(), &format!("{rid}-{session}.log"));
         let run_cmd = s(step, "run");
-        let timeout = step.get("timeout").and_then(Value::as_i64).filter(|t| *t > 0).unwrap_or(BASH_TIMEOUT);
+        let guard = Guard::for_step(wf, step);
+        let timeout = match guard.timeout {
+            Some(t) => t as i64,
+            None => step.get("timeout").and_then(Value::as_i64).filter(|t| *t > 0).unwrap_or(BASH_TIMEOUT),
+        };
         let replay = self.with_run(rid, |r| r.get("replay").and_then(Value::as_i64).unwrap_or(0));
         let mut input = format!("$ {run_cmd}");
         if attempt > 1 {
             input += &format!("\n\n(retry {}: the previous try failed: {last_reason})", attempt - 1);
         }
-        let rec = json!({"step": step["id"], "name": step["name"], "attempt": attempt, "revision": revision, "session": session,
-            "replay": replay, "loop": loop_n, "kind": "bash", "log": log_path, "input": input,
+        let mut rec = json!({"step": step["id"], "name": step["name"], "attempt": attempt, "revision": revision, "session": session,
+            "replay": replay, "loop": loop_n, "kind": "bash", "log": log_path, "input": guard.redact(&input),
             "inputModel": "bash (no cost)", "status": "running", "started": now(), "ended": null, "cost": 0.0, "error": "", "output": ""});
+        if let Some(r) = guard.record() {
+            rec["redact"] = r;
+        }
         self.with_run(rid, |r| {
             r["attempts"].as_array_mut().unwrap().push(rec);
             r["current"] = step["id"].clone();
@@ -1363,6 +1475,7 @@ impl Runner {
         let before = quality::snapshot(&cwd);
         self.with_att(rid, session, |rec| rec["before"] = json!(before));
         self.changed(rid);
+        let protected = guard::fingerprint(&cwd, &guard.protect);
         let (mut ok, mut reason, mut out) = (false, String::new(), String::new());
         let spawned = (|| -> std::io::Result<Option<i32>> {
             let logf = std::fs::File::create(&log_path)?;
@@ -1389,6 +1502,7 @@ impl Runner {
             Ok(code) => {
                 out = last_chars(&read_lossy(&log_path).unwrap_or_default(), 20000);
                 match code {
+                    None if guard.timeout.is_some() => reason = format!("{}: `{run_cmd}` was still running after {}, so it was stopped", guard::LIMIT_HIT, guard::format_duration(timeout as u64)),
                     None => reason = format!("`{run_cmd}` timed out after {timeout}s"),
                     Some(0) => ok = true,
                     Some(c) => reason = format!("`{run_cmd}` exited {c}:\n{}", last_chars(out.trim(), 1500)),
@@ -1396,8 +1510,18 @@ impl Runner {
             }
             Err(e) => reason = format!("couldn't run the command: {e}"),
         }
+        if guard.redactor.is_some() {
+            if let Ok(text) = read_lossy(&log_path) {
+                let _ = std::fs::write(&log_path, guard.redact(&text)); // the saved log keeps no secrets
+            }
+        }
         let after = if before.is_some() { quality::snapshot(&cwd) } else { None };
         self.with_att(rid, session, |rec| rec["after"] = json!(after));
+        let touched = guard::violations(&protected, &guard::fingerprint(&cwd, &guard.protect));
+        if !touched.is_empty() && !self.stopped(rid) {
+            (ok, reason) = (false, guard::protect_reason(&touched, before.is_some()));
+            self.with_att(rid, session, |rec| rec["protected"] = json!(touched));
+        }
         if ok && b(step, "check") && !self.stopped(rid) {
             (ok, reason) = self.check(wf, step);
         }
@@ -1407,8 +1531,14 @@ impl Runner {
             self.with_att(rid, session, |rec| rec["cost"] = json!(jc));
             self.add_cost(rid, jc);
         }
+        if ok && b(step, "gates") && !self.stopped(rid) {
+            let (gok, gr, gc) = self.attached_gates(wf, rid, step, session, &out);
+            (ok, reason) = (gok, gr);
+            self.with_att(rid, session, |rec| rec["cost"] = json!(f(rec, "cost") + gc));
+            self.add_cost(rid, gc);
+        }
         let status = if ok { "ok" } else if self.stopped(rid) { "stopped" } else { "failed" };
-        let (error, output) = (if ok { String::new() } else { reason.clone() }, last_chars(&out, 4000));
+        let (error, output) = (if ok { String::new() } else { guard.redact(&reason) }, last_chars(&guard.redact(&out), 4000));
         self.with_att(rid, session, |rec| {
             for (k, v) in [("status", json!(status)), ("ended", json!(now())), ("error", json!(error)), ("output", json!(output))] {
                 rec[k] = v;
@@ -1424,17 +1554,10 @@ impl Runner {
         self.changed(rid);
         // Retries and revisions build on the files earlier attempts left, so judge everything since the step began
         // (this round of it), not just the last attempt's own changes.
-        let run = self.get_run(rid).unwrap_or_default();
-        let rec = arr(&run, "attempts").iter().rev().find(|a| a["session"] == session).cloned().unwrap_or_default();
-        let num = |a: &Value, k: &str| a.get(k).and_then(Value::as_i64).unwrap_or(0);
-        let base = arr(&run, "attempts")
-            .iter()
-            .find(|a| a["step"] == step["id"] && b(a, "before") && num(a, "replay") == num(&rec, "replay") && num(a, "loop") == num(&rec, "loop"))
-            .map(|a| s(a, "before"))
-            .or_else(|| rec.get("before").and_then(Value::as_str).map(str::to_string));
-        let after = rec.get("after").and_then(Value::as_str).map(str::to_string);
+        let (base, after) = self.step_span(rid, step, session);
         let task = if b(step, "prompt") { s(step, "prompt") } else { format!("$ {}", s(step, "run")) };
-        let verdict = quality::judge(&s(step, "judge"), &task, out, &s(wf, "cwd"), base.as_deref(), after.as_deref(), &workflows::written_files(session), &s(wf, "judgeModel"), &compat::claude_cmd());
+        let guard = Guard::for_step(wf, step);
+        let verdict = quality::judge(&s(step, "judge"), &task, out, &s(wf, "cwd"), base.as_deref(), after.as_deref(), &workflows::written_files(session), &s(wf, "judgeModel"), &compat::claude_cmd(), guard.redactor.as_ref());
         let v = match verdict {
             Ok(v) => v,
             Err(e) => {
@@ -1457,6 +1580,197 @@ impl Runner {
         }
         reason += &format!("\nWhat to fix: {}", s(&v, "feedback"));
         (false, reason, cost)
+    }
+
+    /// The checkpoints to judge an attempt by: from when the step began (this round of it, so retries and
+    /// revisions that build on earlier attempts are included) to the end of this attempt.
+    fn step_span(&self, rid: &str, step: &Value, session: &str) -> (Option<String>, Option<String>) {
+        let run = self.get_run(rid).unwrap_or_default();
+        let rec = arr(&run, "attempts").iter().rev().find(|a| a["session"] == session).cloned().unwrap_or_default();
+        let num = |a: &Value, k: &str| a.get(k).and_then(Value::as_i64).unwrap_or(0);
+        let base = arr(&run, "attempts")
+            .iter()
+            .find(|a| a["step"] == step["id"] && b(a, "before") && num(a, "replay") == num(&rec, "replay") && num(a, "loop") == num(&rec, "loop"))
+            .map(|a| s(a, "before"))
+            .or_else(|| rec.get("before").and_then(Value::as_str).map(str::to_string));
+        (base, rec.get("after").and_then(Value::as_str).map(str::to_string))
+    }
+
+    /// The gates a step must pass (or a gate step checks), with any {{ … }} filled in.
+    fn gate_specs(&self, wf: &Value, rid: &str, step: &Value) -> Res<Vec<Value>> {
+        let mut specs = step_gate_specs(wf, step);
+        if specs.iter().any(|g| template::has_template(&s(g, "run")) || template::has_template(&s(g, "judge"))) {
+            let ctx = self.ctx(rid);
+            for g in specs.iter_mut() {
+                g["run"] = json!(template::render(&s(g, "run"), &ctx, true)?);
+                g["judge"] = json!(template::render(&s(g, "judge"), &ctx, false)?);
+            }
+        }
+        Ok(specs)
+    }
+
+    /// Gates attached to a work step, checked after it (and its own check and judge) succeeded.
+    fn attached_gates(&self, wf: &Value, rid: &str, step: &Value, session: &str, out: &str) -> (bool, String, f64) {
+        let specs = match self.gate_specs(wf, rid, step) {
+            Ok(g) => g,
+            Err(e) => return (false, format!("couldn't fill in a gate's template: {e}"), 0.0),
+        };
+        let (base, after) = self.step_span(rid, step, session);
+        let task = if b(step, "prompt") { s(step, "prompt") } else { format!("$ {}", s(step, "run")) };
+        self.eval_gates(wf, rid, session, &specs, out, &task, base.as_deref(), after.as_deref(), &workflows::written_files(session), Guard::for_step(wf, step).redactor.as_ref())
+    }
+
+    /// Check gates in order: commands first (cheap), then the AI judge, which is skipped once a command failed.
+    /// Approval parts stay "pending" until the review pause. Results go to the attempt's `gates`.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_gates(&self, wf: &Value, rid: &str, session: &str, specs: &[Value], out: &str, task: &str, base: Option<&str>, after: Option<&str>, files: &[String], redact: Option<&guard::Redactor>) -> (bool, String, f64) {
+        let mut items: Vec<Value> = vec![];
+        for g in specs {
+            for (kind, on) in [("run", b(g, "run")), ("judge", b(g, "judge")), ("approve", b(g, "approve"))] {
+                if on {
+                    items.push(json!({"gate": g["name"], "kind": kind, "status": if kind == "approve" { "pending" } else { "waiting" }, "detail": ""}));
+                }
+            }
+        }
+        let set = |items: &Vec<Value>| {
+            let items = items.clone();
+            self.with_att(rid, session, |rec| rec["gates"] = json!(items));
+            self.changed(rid);
+        };
+        set(&items);
+        let (mut fails, mut cost) = (vec![], 0.0);
+        let run_env = input_env(&self.get_run(rid).unwrap_or_default());
+        let commands: Vec<(usize, &Value)> =
+            specs.iter().filter_map(|g| items.iter().position(|it| it["gate"] == g["name"] && it["kind"] == "run").map(|i| (i, g))).collect();
+        for (i, g) in commands {
+            if self.stopped(rid) {
+                break;
+            }
+            items[i]["status"] = json!("running");
+            set(&items);
+            let cmd_text = s(g, "run");
+            let timeout = g["timeout"].as_i64().unwrap_or(workflows::GATE_TIMEOUT).max(1) as u64;
+            let mut cmd = compat::shell_command(&cmd_text);
+            cmd.current_dir(s(wf, "cwd")).env("STEP_INPUT", out).envs(run_env.clone());
+            let (status, detail) = match run_capture(cmd, None, Some(Duration::from_secs(timeout))) {
+                Ok(Output { code: Some(0), stdout, .. }) => ("pass", last_chars(stdout.trim(), 600)),
+                Ok(Output { code: None, .. }) => ("fail", format!("`{cmd_text}` timed out after {timeout}s")),
+                Ok(Output { code: Some(c), stdout, stderr }) => ("fail", format!("`{cmd_text}` exited {c}:\n{}", last_chars((stdout + &stderr).trim(), 1500))),
+                Err(e) => ("fail", format!("couldn't run `{cmd_text}`: {e}")),
+            };
+            if status == "fail" {
+                fails.push(format!("gate “{}”: {detail}", s(g, "name")));
+            }
+            items[i]["status"] = json!(status);
+            items[i]["detail"] = json!(detail);
+            set(&items);
+        }
+        for i in 0..items.len() {
+            if items[i]["kind"] != "judge" {
+                continue;
+            }
+            if !fails.is_empty() || self.stopped(rid) {
+                items[i]["status"] = json!("skipped");
+                items[i]["detail"] = json!("not checked: a command gate failed first");
+                continue;
+            }
+            let g = specs.iter().find(|g| g["name"] == items[i]["gate"]).cloned().unwrap_or_default();
+            items[i]["status"] = json!("running");
+            set(&items);
+            match quality::judge(&s(&g, "judge"), task, out, &s(wf, "cwd"), base, after, files, &s(wf, "judgeModel"), &compat::claude_cmd(), redact) {
+                Ok(v) => {
+                    cost += f(&v, "cost");
+                    let pass = b(&v, "pass");
+                    if !pass {
+                        let unmet: Vec<String> = arr(&v, "criteria").iter().filter(|c| !b(c, "met")).map(|c| format!("- {}: {}", s(c, "criterion"), s(c, "evidence"))).collect();
+                        fails.push(format!(
+                            "gate “{}”: the AI judge scored it {}/100.{}\nWhat to fix: {}",
+                            s(&g, "name"),
+                            py_str(&v["score"]),
+                            if unmet.is_empty() { String::new() } else { format!("\nNot met:\n{}", unmet.join("\n")) },
+                            s(&v, "feedback")
+                        ));
+                    }
+                    items[i]["status"] = json!(if pass { "pass" } else { "fail" });
+                    items[i]["detail"] = json!(s(&v, "feedback"));
+                    items[i]["verdict"] = v;
+                }
+                Err(e) => {
+                    fails.push(format!("gate “{}”: AI judge: {e}", s(&g, "name")));
+                    items[i]["status"] = json!("error");
+                    items[i]["detail"] = json!(e);
+                }
+            }
+            set(&items);
+        }
+        (fails.is_empty(), fails.join("\n\n"), cost)
+    }
+
+    /// A gate step: checks everything the steps before it changed, does no work of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn run_gate_step(&self, wf: &Value, rid: &str, step: &Value, prev_out: &str, attempt: i64, revision: i64, loop_n: i64, session: &str, prev_session: &[String], last_reason: &str) -> (bool, String) {
+        let replay = self.with_run(rid, |r| r.get("replay").and_then(Value::as_i64).unwrap_or(0));
+        let specs = self.gate_specs(wf, rid, step);
+        let names: Vec<String> = specs.as_ref().map(|v| v.iter().map(|g| s(g, "name")).collect()).unwrap_or_default();
+        let mut input = format!("Gate: checks {}", names.join(", "));
+        if attempt > 1 {
+            input += &format!("\n\n(retry {}: the previous check failed: {last_reason})", attempt - 1);
+        }
+        let rec = json!({"step": step["id"], "name": step["name"], "attempt": attempt, "revision": revision, "session": session,
+            "replay": replay, "loop": loop_n, "kind": "gate", "input": input, "inputModel": "gate (checks only)",
+            "status": "running", "started": now(), "ended": null, "cost": 0.0, "error": "", "output": ""});
+        self.with_run(rid, |r| {
+            r["attempts"].as_array_mut().unwrap().push(rec);
+            r["current"] = step["id"].clone();
+        });
+        self.link(rid, step, session, attempt, if revision == 0 { prev_session } else { &[] }, revision, loop_n);
+        // what to judge: everything changed since the first of the steps before this gate started (this replay)
+        let cwd = s(wf, "cwd");
+        let after = quality::snapshot(&cwd);
+        let upstream = upstream_steps(wf, &s(step, "id"));
+        let run = self.get_run(rid).unwrap_or_default();
+        let earlier: Vec<&Value> = arr(&run, "attempts")
+            .iter()
+            .filter(|a| upstream.contains(&s(a, "step")) && a.get("replay").and_then(Value::as_i64).unwrap_or(0) == replay)
+            .collect();
+        let base = earlier.iter().find(|a| b(a, "before")).map(|a| s(a, "before")).or_else(|| after.clone());
+        let mut files: Vec<String> = vec![];
+        for a in &earlier {
+            for p in workflows::written_files(&s(a, "session")) {
+                if !files.contains(&p) {
+                    files.push(p);
+                }
+            }
+        }
+        self.with_att(rid, session, |rec| {
+            rec["before"] = json!(base.as_ref().filter(|_| after.is_some()));
+            rec["after"] = json!(after);
+        });
+        self.changed(rid);
+        let names_done: Vec<String> = upstream_names(wf, &upstream);
+        let task = format!(
+            "The work done so far by the workflow “{}” ({}). This gate checks it before the workflow goes on.",
+            s(wf, "name"),
+            if names_done.is_empty() { "no earlier steps".to_string() } else { format!("steps: {}", names_done.join(", ")) }
+        );
+        let (ok, reason, cost) = match &specs {
+            Ok(specs) => self.eval_gates(wf, rid, session, specs, prev_out, &task, base.as_deref(), after.as_deref(), &files, Guard::for_step(wf, step).redactor.as_ref()),
+            Err(e) => (false, format!("couldn't fill in a gate's template: {e}"), 0.0),
+        };
+        let summary = self
+            .get_run(rid)
+            .and_then(|r| arr(&r, "attempts").iter().rev().find(|a| a["session"] == session).map(|a| gate_summary(arr(a, "gates"))))
+            .unwrap_or_default();
+        let status = if ok { "ok" } else if self.stopped(rid) { "stopped" } else { "failed" };
+        let error = if ok { String::new() } else { reason.clone() };
+        self.with_att(rid, session, |rec| {
+            for (k, v) in [("status", json!(status)), ("ended", json!(now())), ("cost", json!(cost)), ("error", json!(error)), ("output", json!(summary))] {
+                rec[k] = v;
+            }
+        });
+        self.add_cost(rid, cost);
+        self.changed(rid);
+        (ok, reason)
     }
 
     fn attempt(&self, rid: &str, session: &str) -> Res<(Value, Value)> {
@@ -1843,7 +2157,58 @@ fn plan(wf: &Value) -> Value {
     json!(arr(wf, "steps").iter().map(|st| json!({"id": st["id"], "name": st["name"], "agents": st["agents"],
         "retries": st["retries"], "check": st["check"], "judge": s(st, "judge"), "review": st["review"],
         "dependsOn": st["dependsOn"], "loopBack": st["loopBack"], "onSuccess": st["onSuccess"], "onFailure": st["onFailure"],
-        "kind": s_or(st, "kind", "claude"), "run": s(st, "run")})).collect::<Vec<_>>())
+        "kind": s_or(st, "kind", "claude"), "run": s(st, "run"), "gates": st.get("gates").cloned().unwrap_or(json!([])),
+        "gate": st.get("gate").cloned().unwrap_or(Value::Null)})).collect::<Vec<_>>())
+}
+
+/// A step's gates: the named ones (in the order it lists them), then a gate step's own inline checks.
+fn step_gate_specs(wf: &Value, step: &Value) -> Vec<Value> {
+    let mut specs: Vec<Value> = str_list(step, "gates")
+        .iter()
+        .filter_map(|n| arr(wf, "gates").iter().find(|g| s(g, "name") == *n).cloned())
+        .collect();
+    if step.get("gate").is_some_and(Value::is_object) {
+        let mut g = step["gate"].clone();
+        g["name"] = json!(s(step, "name"));
+        specs.push(g);
+    }
+    specs
+}
+
+/// Whether finishing this step needs a person's approval (one of its gates has approve: true).
+fn wants_approval(wf: &Value, step: &Value) -> bool {
+    step_gate_specs(wf, step).iter().any(|g| b(g, "approve"))
+}
+
+/// Every step this one depends on, directly or indirectly.
+fn upstream_steps(wf: &Value, sid: &str) -> HashSet<String> {
+    let steps = arr(wf, "steps");
+    let deps = |id: &str| steps.iter().find(|st| st["id"] == id).map(|st| str_list(st, "dependsOn")).unwrap_or_default();
+    let (mut seen, mut todo) = (HashSet::new(), deps(sid));
+    while let Some(d) = todo.pop() {
+        if seen.insert(d.clone()) {
+            todo.extend(deps(&d));
+        }
+    }
+    seen
+}
+
+fn upstream_names(wf: &Value, ids: &HashSet<String>) -> Vec<String> {
+    arr(wf, "steps").iter().filter(|st| ids.contains(&s(st, "id"))).map(|st| s(st, "name")).collect()
+}
+
+/// One line per gate check, for a gate step's result.
+fn gate_summary(items: &[Value]) -> String {
+    items
+        .iter()
+        .map(|it| {
+            let mark = match s(it, "status").as_str() { "pass" => "✓", "fail" | "error" => "✗", "pending" => "…", _ => "–" };
+            let what = match s(it, "kind").as_str() { "run" => "command", "judge" => "AI judge", _ => "your approval" };
+            let detail = first_line(&s(it, "detail"));
+            format!("{mark} {} ({what}){}", s(it, "gate"), if detail.is_empty() { String::new() } else { format!(": {detail}") })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn step_agents(wf: &Value, step: &Value) -> Vec<Value> {
@@ -2039,5 +2404,77 @@ mod tests {
     fn only_interrupted_runs_resume() {
         let r = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
         assert!(r.resume("no-such-run").is_err());
+    }
+
+    /// Runs a workflow to the end and returns the finished run (its saved files are removed when `done` runs).
+    fn run(wf: Value) -> (Value, impl FnOnce()) {
+        let runner = Runner::new(Arc::new(Graph::new()), Box::new(|| {}));
+        let rid = runner.start("guard-test", Some(wf), &json!({})).unwrap();
+        for _ in 0..600 {
+            let r = runner.get_run(&rid).unwrap();
+            if !["running", "waiting"].contains(&s(&r, "status").as_str()) && !b(&r, "finishing") {
+                return (r, move || drop(runner.discard(&rid)));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the run didn't finish");
+    }
+
+    /// A stand-in `claude` on PATH: it edits .env and claims success, or reports running out of turns when
+    /// given --max-turns, and records its arguments.
+    #[cfg(unix)]
+    #[test]
+    fn guardrails_end_to_end() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ag-guard-run-{}", hex_id(6))).to_string_lossy().into_owned();
+        let bin = join(&dir, "bin");
+        let proj = join(&dir, "proj");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(join(&proj, ".env"), "A=1\n").unwrap();
+        let fake = join(&bin, "claude");
+        std::fs::write(&fake, format!(r#"#!/bin/sh
+cat > /dev/null
+echo "$@" >> "{dir}/args.txt"
+case "$*" in
+  *--max-turns*) echo '{{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":3,"result":"","total_cost_usd":0.01}}' ;;
+  *) echo B=2 >> .env; echo '{{"type":"result","subtype":"success","is_error":false,"result":"All done, nothing else touched","total_cost_usd":0.02}}' ;;
+esac
+"#)).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap_or_default()));
+
+        // a Claude step that edits .env fails even though it claims success, and isn't retried
+        let (r, done) = run(json!({"name": "guard", "cwd": proj, "protect": [".env*"], "limits": {"budgetUsd": 1},
+                            "steps": [{"id": "edit", "prompt": "Fix the bug", "retries": 2}]}));
+        assert_eq!(s(&r, "status"), "failed");
+        let atts = arr(&r, "attempts");
+        assert_eq!(atts.len(), 1);
+        assert!(s(&atts[0], "error").starts_with("changed protected files: .env"), "{}", atts[0]);
+        let args = std::fs::read_to_string(join(&dir, "args.txt")).unwrap();
+        assert!(args.contains("Edit(.env*),Write(.env*)") && args.contains("--max-budget-usd 1"), "{args}");
+        done();
+
+        // maxTurns is passed to Claude Code, and running out of turns fails the step with no retry
+        let (r, done) = run(json!({"name": "turns", "cwd": proj, "steps": [{"id": "t", "prompt": "Work", "retries": 2, "limits": {"maxTurns": 3}}]}));
+        let atts = arr(&r, "attempts");
+        assert_eq!(atts.len(), 1);
+        assert_eq!(s(&atts[0], "error"), "went over its limit: it used its 3 turns");
+        assert!(std::fs::read_to_string(join(&dir, "args.txt")).unwrap().contains("--max-turns 3"));
+        done();
+
+        // a shell step that touches a protected file fails; its saved output and log are redacted
+        let key = format!("sk-ant-api03-{}", "z".repeat(40));
+        let (r, done) = run(json!({"name": "bash", "cwd": proj, "redact": true, "steps": [
+            {"id": "ok", "run": format!("echo using {key}")},
+            {"id": "lock", "run": "touch yarn.lock", "protect": ["**/*.lock"]}]}));
+        let atts = arr(&r, "attempts");
+        assert_eq!(s(&atts[0], "status"), "ok");
+        assert_eq!(s(&atts[0], "output").trim(), "using [REDACTED]");
+        let log = std::fs::read_to_string(s(&atts[0], "log")).unwrap();
+        assert!(log.contains("[REDACTED]") && !log.contains(&key), "{log}");
+        assert!(s(&atts[1], "error").starts_with("changed protected files: yarn.lock"), "{}", atts[1]);
+        done();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

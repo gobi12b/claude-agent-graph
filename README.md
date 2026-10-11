@@ -37,6 +37,7 @@ The screenshots come from a small demo project: a to-do app with a planted bug, 
 - **Builder**: drag-and-drop steps that run as headless `claude -p` sessions or as free shell commands, in dependency order and in parallel where possible. Workflows are plain YAML in `<project>/.claude/workflows/`, so they're versioned with your code and editable by hand.
 - **Checks and retries**: a shell `check:` must pass, a failed step retries with the reason it failed, and `loopBack` sends the run back to an earlier step (for example, "tests fail → fix it again").
 - **AI judge**: write a step's acceptance criteria in plain words; an independent AI grades the step's real file changes against them, and its feedback drives the retry.
+- **Gates**: reusable checks (a command, AI judge criteria and/or your approval) defined once and attached to any step, or placed as a gate step between steps that checks everything before it. See [Gates](#gates).
 - **Review checkpoints**: a step can pause for your approval or feedback before the workflow goes on.
 - **Steering**: send Claude guidance while a step runs (it continues the same conversation with your message), or redo a finished step with your feedback.
 - **Step diffs and rewind**: every step is checkpointed, so you see exactly what it changed and can put the project back to before it (and undo that).
@@ -78,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/ins
 irm https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/install.ps1 | iex
 ```
 
-The installer downloads the right program for your computer from [`binaries/`](binaries/) and checks it against `binaries/SHA256SUMS`. Then it:
+The installer downloads the right program for your computer from the [latest release](https://github.com/gobi12b/claude-agent-graph/releases/latest) and checks it against the release's `SHA256SUMS`. Then it:
 
 - **macOS / Linux:** puts it at `~/.local/bin/agent-graph` and, on Linux, adds an app-menu entry with the icon.
 - **Windows:** puts it at `%LOCALAPPDATA%\Programs\claude-agent-graph\agent-graph.exe`, adds that folder to your `PATH`, and adds a Start-menu shortcut. Open a new terminal afterwards so the `PATH` change is picked up.
@@ -87,11 +88,11 @@ The installer downloads the right program for your computer from [`binaries/`](b
 
 | Computer | File | Notes |
 |---|---|---|
-| Linux, x86_64 | [`agent-graph-linux-x86_64-window`](binaries/agent-graph-linux-x86_64-window) | Native window. Needs WebKitGTK (`sudo apt install libwebkit2gtk-4.1-0` on Debian/Ubuntu, `sudo dnf install webkit2gtk4.1` on Fedora) and glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer). |
-| Linux, x86_64 | [`agent-graph-linux-x86_64`](binaries/agent-graph-linux-x86_64) | Opens in your browser. Runs on any distro with glibc 2.28+ (2018 or newer). |
-| Linux, ARM64 | [`agent-graph-linux-arm64`](binaries/agent-graph-linux-arm64) | Opens in your browser. glibc 2.28+. |
-| macOS (Apple Silicon and Intel) | [`agent-graph-macos-universal`](binaries/agent-graph-macos-universal) | Opens in your browser. |
-| Windows 10 / 11 (x64, and ARM through emulation) | [`agent-graph-windows-x86_64.exe`](binaries/agent-graph-windows-x86_64.exe) | Native window (Edge WebView2, preinstalled on Windows 10 and 11). |
+| Linux, x86_64 | [`agent-graph-linux-x86_64-window`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-linux-x86_64-window) | Native window. Needs WebKitGTK (`sudo apt install libwebkit2gtk-4.1-0` on Debian/Ubuntu, `sudo dnf install webkit2gtk4.1` on Fedora) and glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer). |
+| Linux, x86_64 | [`agent-graph-linux-x86_64`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-linux-x86_64) | Opens in your browser. Runs on any distro with glibc 2.28+ (2018 or newer). |
+| Linux, ARM64 | [`agent-graph-linux-arm64`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-linux-arm64) | Opens in your browser. glibc 2.28+. |
+| macOS (Apple Silicon and Intel) | [`agent-graph-macos-universal`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-macos-universal) | Opens in your browser. |
+| Windows 10 / 11 (x64, and ARM through emulation) | [`agent-graph-windows-x86_64.exe`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-windows-x86_64.exe) | Native window (Edge WebView2, preinstalled on Windows 10 and 11). |
 
 Rename it to `agent-graph` (`agent-graph.exe` on Windows) and put it somewhere on your `PATH`. On macOS and Linux, make it executable first: `chmod +x agent-graph`. On macOS, a file downloaded in a browser is quarantined, so clear it once: `xattr -d com.apple.quarantine agent-graph`. The installer's download doesn't need this.
 
@@ -177,7 +178,27 @@ Which folder it runs in:
 2. Otherwise `cwd:` in the file. A relative `cwd` (such as `cwd: ..`) is relative to the file, not to where you run the command.
 3. Otherwise the project the file belongs to, if it's inside `<project>/.claude/workflows/`; else the file's own folder.
 
-The other settings are the ones the builder writes (open any workflow with **Open as text** to see them all): `model`, `permissionMode`, `allowedTools`, `disallowedTools`, `passOutput`, `maxBudgetUsd`, `judgeModel`, `agents`, and per step `prompt` or `run` (with `timeout` in seconds for `run`), `retries`, `check`, `judge`, `model`, `review`, `agents`, `dependsOn`, `onSuccess`, `onFailure` and `loopBack`. Steps run one after another unless `dependsOn` says otherwise. Replaying a step of a file run from the app reads the file again.
+The other settings are the ones the builder writes (open any workflow with **Open as text** to see them all): `model`, `permissionMode`, `allowedTools`, `disallowedTools`, `passOutput`, `maxBudgetUsd`, `judgeModel`, `agents`, `gates`, and per step `prompt`, `run` (with `timeout` in seconds) or `gate`, then `retries`, `check`, `judge`, `gates`, `model`, `review`, `agents`, `dependsOn`, `onSuccess`, `onFailure` and `loopBack`. Steps run one after another unless `dependsOn` says otherwise. Replaying a step of a file run from the app reads the file again.
+
+#### Guardrails
+
+Set these on the workflow or on a step (the step's value wins). Files and workflows run from the app support them; the builder doesn't show them yet.
+
+```yaml
+limits:
+  budgetUsd: 0.50      # total for the step, retries and AI judge included
+  maxTurns: 40         # Claude Code steps only
+  timeout: 20m         # 90s, 20m, 1h30m; for shell steps it replaces `timeout`
+protect:               # paths the step must not change (.gitignore-style; ** spans folders)
+  - ".github/**"
+  - "**/*.lock"
+  - ".env*"
+redact: true           # mask API keys, tokens and private keys in logs, run files and judge input
+redactPatterns:        # extra regexes to mask (a first capture group is kept)
+  - "ACME-[0-9]{6}"
+```
+
+A step that goes over a limit or changes a protected file fails with "went over its limit" or "changed protected files", and isn't retried. Protected paths are also refused up front for Claude steps (as `Edit(…)` and `Write(…)` rules), and checked after every step against the files themselves, git-ignored ones such as `.env` included, so a step fails even if it claims success. `maxBudgetUsd` still caps each attempt as before.
 
 ### Check workflows: `validate`
 
@@ -228,6 +249,58 @@ Example: run a workflow every night with cron, and keep the log:
 ```sh
 0 2 * * *  cd ~/code/my-app && agent-graph run "Review & tidy up code" --yes >> ~/agent-graph-nightly.log 2>&1
 ```
+
+## Gates
+
+A gate is a check the work must pass before the workflow goes on. Define a gate once, then use it on as many steps as you like. Each gate has one or more checks:
+
+| Check | Passes when |
+|---|---|
+| `run:` | The command exits with 0. It runs in the project folder, and `timeout:` sets its time limit in seconds (default 600). |
+| `judge:` | An independent AI finds every criterion met in the real changes (the git diff), as for a step's own [AI judge](#ai-judge). |
+| `approve: true` | You approve it. The run pauses, as for a review point. |
+
+Commands run first. The AI judge is skipped when a command has already failed, so a broken build doesn't cost a verdict. Your approval comes last.
+
+```yaml
+gates:
+  tests-pass:
+    description: The test suite passes
+    run: npm test
+  spec-covered:
+    judge: |
+      - Every requirement in docs/spec.md is implemented
+  sign-off:
+    approve: true
+
+steps:
+  - id: build
+    prompt: Build the feature described in docs/spec.md.
+    retries: 2
+    gates: [tests-pass, spec-covered]   # the step must pass these
+  - id: ready
+    name: Ready to ship?
+    gate: [spec-covered, sign-off]      # a gate step: checks, does no work
+    loopBack: {to: build, max: 2}
+  - id: notes
+    prompt: Write release notes for the change.
+```
+
+Gates can be used in two ways:
+
+- **On a step** (`gates: [...]`). The gates are checked after the step succeeds, after its own `check:` and `judge:`. If one fails, the step fails, and its retry or loop-back is told exactly why. With an approval gate, the step pauses for you. "Request changes" redoes the step with your feedback.
+- **As a gate step** (`gate: name`, `gate: [names]`, or the checks written inline: `gate: {run: make lint}`). A checkpoint between steps that does no work itself. It checks everything the steps before it changed. A gate step passes their output on to the next step unchanged. If the gate fails, its `loopBack` sends the run back to the step that does the work, with the gate's feedback. Otherwise the run stops (or carries on, with `onFailure: continue`). At an approval gate, **Send it back** fails the gate with your feedback, which goes to that loop-back.
+
+In the builder, gates are under **Gates** on the left:
+
+- **Gate step** adds a checkpoint.
+- **Drop a gate onto a step** to make the step pass it.
+- **Make my own gate** creates a new one.
+- **Gate library** has ready-made gates: `focused-change`, `tests-included`, `no-secrets`, `secure-change`, `docs-updated`, `matches-spec` and `sign-off`.
+
+Click a gate to edit it, or **⭐ Save to my library** to reuse it in other workflows. Each check's result (pass/fail, the judge's score and evidence, your decision) shows on the step's **Result** tab and in the terminal (`⛩ ✓ tests-pass (command)`). The **Fix a bug**, **Build a new feature** and **Security check** samples use gates.
+
+A gate's command and criteria can use the same `{{ inputs.… }}` templates as prompts (see below). Commands also get the step's output in `$STEP_INPUT` and the run's inputs as `$INPUT_<NAME>`.
 
 ## Inputs, separate copies and branches
 
@@ -324,11 +397,11 @@ Each Claude step's **Result** tab shows the tokens it read and wrote, its number
 |---|---|
 | Claude Code transcripts (read only) | `~/.claude/projects/`, `~/.claude/sessions/` |
 | Your workflows | `<project>/.claude/workflows/<id>.yaml` |
-| Your agent and step additions | `~/.config/claude-agent-graph/agents.yaml`, `steps.yaml` |
+| Your helper, gate and step additions | `~/.config/claude-agent-graph/agents.yaml`, `gates.yaml`, `steps.yaml` |
 | Run history and logs | `~/.config/claude-agent-graph/runs/` |
 | Separate copies of runs (`isolation: worktree`) | `~/.config/claude-agent-graph/worktrees/` (remove finished ones with `agent-graph clean`) |
 | App settings (chosen IDE, extra model names, known projects) | `~/.config/claude-agent-graph/settings.json` |
-| Built-in agent library, step templates and sample workflows | Inside the program. A copy is written to `~/.config/claude-agent-graph/builtin/` so you can open it in your editor; it's refreshed when you update. When you run from a clone, `defaults/` in the clone is used instead. Set `AGENT_GRAPH_DEFAULTS` to use another folder. |
+| Built-in helper library, gate library, step templates and sample workflows | Inside the program. A copy is written to `~/.config/claude-agent-graph/builtin/` so you can open it in your editor; it's refreshed when you update. When you run from a clone, `defaults/` in the clone is used instead. Set `AGENT_GRAPH_DEFAULTS` to use another folder. |
 
 On Windows, `~` means your user folder (`C:\Users\<you>`).
 
@@ -381,7 +454,7 @@ The native window needs these to **build**:
 | macOS | Nothing beyond Xcode's Command Line Tools |
 | Windows | Nothing |
 
-### Rebuilding the files in `binaries/`
+### Building a release
 
 Everything except the Linux window build is cross-compiled from one Linux machine with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild). It uses [zig](https://ziglang.org) as the linker, so no other toolchains or SDKs are needed:
 
@@ -395,8 +468,12 @@ cargo zigbuild --release --target x86_64-pc-windows-gnu --features window  # →
 cargo zigbuild --release --target universal2-apple-darwin                  # → agent-graph-macos-universal
 cargo build    --release --features window                                 # → agent-graph-linux-x86_64-window (on Linux)
 
+mkdir -p binaries   # copy each build here under the name above; binaries/ is git-ignored
 cd binaries && sha256sum agent-graph-* > SHA256SUMS
+gh release create vX.Y.Z agent-graph-* SHA256SUMS --title vX.Y.Z --generate-notes
 ```
+
+The installers always fetch from the latest release, so publishing one updates every new install.
 
 The `.2.28` suffix links against glibc 2.28, so those builds run on older distros. The window build links the system WebKitGTK, so it needs at least the glibc of the machine that built it. A macOS build with the native window needs Apple's SDK, so build that one on a Mac.
 
@@ -427,8 +504,7 @@ src/
   util.rs       paths, JSON helpers, running commands
 ui/index.html   the whole UI (single file, no build step), compiled into the program
 assets/         icons
-defaults/       built-in agent library, step templates and sample workflows
-binaries/       prebuilt programs for each OS, and their checksums
+defaults/       built-in helper library, gate library, step templates and sample workflows
 ```
 
 ## License

@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 
 use crate::util::*;
 use crate::watcher::{file_tool, parse_ts};
-use crate::{compat, providers, quality, template, wfstore, worktree, yamldoc};
+use crate::{compat, guard, providers, quality, template, wfstore, worktree, yamldoc};
 
 pub const PERMISSION_MODES: [&str; 6] = ["acceptEdits", "auto", "dontAsk", "plan", "manual", "bypassPermissions"];
 pub const BASH_TIMEOUT: i64 = 1800; // default limit for shell steps (seconds)
@@ -106,14 +106,17 @@ pub fn find_workflow(wid: &str) -> Option<Value> {
 
 // ---- workflow files given on the command line --------------------------------------------------------
 
-const WF_KEYS: [&str; 19] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
-    "maxBudgetUsd", "judgeModel", "agents", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver", "autoResume"];
+const WF_KEYS: [&str; 24] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
+    "maxBudgetUsd", "judgeModel", "agents", "gates", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver",
+    "limits", "protect", "redact", "redactPatterns", "autoResume"];
 const INPUT_KEYS: [&str; 5] = ["description", "type", "required", "default", "options"];
 const WORKTREE_KEYS: [&str; 4] = ["base", "keep", "setup", "copy"];
 const DELIVER_KEYS: [&str; 6] = ["branch", "commit", "message", "push", "pr", "when"];
 const PR_KEYS: [&str; 4] = ["draft", "title", "body", "base"];
-const STEP_KEYS: [&str; 16] = ["id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
-    "onSuccess", "onFailure", "loopBack", "agents", "review", "judge"];
+const STEP_KEYS: [&str; 22] = ["id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
+    "onSuccess", "onFailure", "loopBack", "agents", "review", "judge", "gates", "gate", "limits", "protect", "redact", "redactPatterns"];
+const GATE_KEYS: [&str; 6] = ["name", "description", "run", "timeout", "judge", "approve"];
+pub const GATE_TIMEOUT: i64 = 600; // default limit for a gate's command (seconds)
 const AGENT_KEYS: [&str; 5] = ["name", "description", "prompt", "tools", "model"];
 
 /// A workflow from any YAML file, not only the ones the app knows. Returns (raw dict, path).
@@ -222,6 +225,22 @@ pub fn lint(raw: &Value, wf: &Value) -> Vec<String> {
             unknown(pr.keys().collect(), &PR_KEYS, "deliver.pr", &mut warn);
         }
     }
+    if let Some(o) = raw.get("limits").and_then(Value::as_object) {
+        unknown(o.keys().collect(), &guard::LIMIT_KEYS, "workflow limits", &mut warn);
+    }
+    for (i, st) in arr(raw, "steps").iter().enumerate() {
+        if let Some(o) = st.get("limits").and_then(Value::as_object) {
+            unknown(o.keys().collect(), &guard::LIMIT_KEYS, &format!("step {} limits", i + 1), &mut warn);
+        }
+    }
+    for st in arr(wf, "steps") {
+        let max_turns = st.get("limits").and_then(|l| l.get("maxTurns")).or_else(|| wf.get("limits").and_then(|l| l.get("maxTurns")));
+        let model = if b(st, "model") { s(st, "model") } else { s(wf, "model") };
+        let prov = providers::split(&model).0;
+        if max_turns.is_some() && s(st, "kind") == "claude" && prov != "claude" && prov != "ollama" {
+            warn.push(format!("step “{}”: maxTurns only applies to Claude Code steps, so it's ignored for {model}", s(st, "name")));
+        }
+    }
     if b(wf, "worktree") && s(wf, "isolation") != "worktree" && raw.get("worktree").is_some() {
         warn.push("workflow: “worktree” settings are ignored unless isolation is worktree".into());
     }
@@ -230,7 +249,18 @@ pub fn lint(raw: &Value, wf: &Value) -> Vec<String> {
             unknown(o.keys().collect(), &AGENT_KEYS, &format!("helper “{}”", o.get("name").map(py_str).unwrap_or("?".into())), &mut warn);
         }
     }
+    for g in arr(raw, "gates") {
+        if let Some(o) = g.as_object() {
+            unknown(o.keys().collect(), &GATE_KEYS, &format!("gate “{}”", o.get("name").map(py_str).unwrap_or("?".into())), &mut warn);
+        }
+    }
     for (i, st) in arr(raw, "steps").iter().enumerate() {
+        if let Some(Value::Object(g)) = st.get("gate") {
+            unknown(g.keys().collect(), &GATE_KEYS[1..], &format!("step {} (“{}”) gate", i + 1, st.get("name").map(py_str).unwrap_or("?".into())), &mut warn);
+        }
+        if st.get("gate").is_some_and(truthy) && (b(st, "prompt") || b(st, "run")) {
+            warn.push(format!("step {} (“{}”): a gate step only checks, so its prompt / run is ignored", i + 1, st.get("name").map(py_str).unwrap_or("?".into())));
+        }
         if let Some(o) = st.as_object() {
             unknown(o.keys().collect(), &STEP_KEYS, &format!("step {} (“{}”)", i + 1, o.get("name").map(py_str).unwrap_or("?".into())), &mut warn);
         }
@@ -275,6 +305,12 @@ pub fn lint(raw: &Value, wf: &Value) -> Vec<String> {
     for a in arr(wf, "agents") {
         if !used.contains(&s(a, "name")) {
             warn.push(format!("helper “{}” is defined but no step uses it", s(a, "name")));
+        }
+    }
+    let used_gates: HashSet<String> = arr(wf, "steps").iter().flat_map(|st| str_list(st, "gates")).collect();
+    for g in arr(wf, "gates") {
+        if !used_gates.contains(&s(g, "name")) {
+            warn.push(format!("gate “{}” is defined but no step uses it", s(g, "name")));
         }
     }
     warn
@@ -360,13 +396,17 @@ pub fn workflows_state() -> Value {
 pub fn open_workflow_file(wid: &Value, what: &Value) -> Res<Value> {
     let what = what.as_str().unwrap_or("");
     let (target, project);
-    if ["agents", "steps", "userAgents", "userSteps"].contains(&what) {
+    if ["agents", "steps", "gates", "userAgents", "userSteps", "userGates"].contains(&what) {
         target = s(&wfstore::default_files(), what);
         if !exists(&target) {
             // first time: start the user's file from a commented template
             std::fs::create_dir_all(dirname(&target)).map_err(|e| e.to_string())?;
             let kind = what[4..].to_lowercase();
-            let top = if what == "userAgents" { "categories" } else { "steps" };
+            let top = match what {
+                "userAgents" => "categories",
+                "userGates" => "gates",
+                _ => "steps",
+            };
             std::fs::write(
                 &target,
                 format!("# Your additions to the app's defaults (same shape as defaults/{kind}.yaml in the app).\n# Entries with the same name replace the defaults.\n{top}:\n"),
@@ -424,6 +464,20 @@ pub fn validate(wf: &Value) -> Res<Value> {
                            "tools": str_items(a.get("tools")), "model": s(a, "model").trim()}));
     }
     let agent_names: HashSet<String> = agents.iter().map(|a| s(a, "name")).collect();
+    let mut gates: Vec<Value> = vec![];
+    for g in gate_list(wf.get("gates")) {
+        let gname = g.get("name").map(py_str).unwrap_or_default().trim().to_lowercase();
+        if !agent_name_re().is_match(&gname) {
+            return Err(format!("Gate name “{gname}” must be lowercase letters, digits and dashes, starting with a letter."));
+        }
+        if gates.iter().any(|x| x["name"] == gname.as_str()) {
+            return Err(format!("Two gates are called “{gname}”."));
+        }
+        let mut spec = clean_gate(&g, &format!("Gate “{gname}”"))?;
+        spec.as_object_mut().unwrap().shift_insert(0, "name".into(), json!(gname));
+        gates.push(spec);
+    }
+    let gate_names: HashSet<String> = gates.iter().map(|g| s(g, "name")).collect();
     let steps = arr(wf, "steps");
     if steps.is_empty() {
         return err("Add at least one step.");
@@ -468,7 +522,35 @@ pub fn validate(wf: &Value) -> Res<Value> {
         }
         let label = s_or(st, "name", &(i + 1).to_string());
         let kind_field = st.get("kind").and_then(Value::as_str);
-        let kind = if kind_field == Some("bash") || (b(st, "run") && kind_field != Some("claude")) { "bash" } else { "claude" };
+        let kind = if kind_field == Some("gate") || (b(st, "gate") && kind_field.is_none()) {
+            "gate"
+        } else if kind_field == Some("bash") || (b(st, "run") && kind_field != Some("claude")) {
+            "bash"
+        } else {
+            "claude"
+        };
+        // gates: named ones the step must pass (for a gate step, the ones it checks), plus a gate step's own inline checks
+        let mut step_gates: Vec<String> = match st.get("gates") {
+            Some(Value::Array(a)) => a.iter().map(py_str).collect(),
+            Some(v) if truthy(v) => vec![py_str(v)],
+            _ => vec![],
+        };
+        let mut inline_gate = Value::Null;
+        if kind == "gate" {
+            match st.get("gate") {
+                Some(Value::Object(_)) => inline_gate = clean_gate(&st["gate"], &format!("Step “{label}”'s gate"))?,
+                Some(Value::Array(a)) => step_gates.splice(0..0, a.iter().map(py_str)).for_each(drop),
+                Some(v) if truthy(v) => step_gates.insert(0, py_str(v)),
+                _ => {}
+            }
+            if step_gates.is_empty() && inline_gate.is_null() {
+                return Err(format!("Gate step “{label}” has nothing to check: name gates (gate: [tests-pass]) or write run / judge / approve under gate."));
+            }
+        }
+        step_gates.dedup();
+        if let Some(u) = step_gates.iter().find(|n| !gate_names.contains(*n)) {
+            return Err(format!("Step “{label}” uses gate “{u}”, which isn't defined under gates."));
+        }
         if kind == "bash" && s(st, "run").trim().is_empty() {
             return Err(format!("Step “{label}” is a shell step but has no command (run)."));
         }
@@ -492,7 +574,8 @@ pub fn validate(wf: &Value) -> Res<Value> {
         let int_or = |k: &str, d: i64| -> Res<i64> { st.get(k).filter(|v| truthy(v)).map(py_int).unwrap_or(Ok(d)) };
         let on_success = renames.get(&st.get("onSuccess").map(py_str).unwrap_or("None".into())).cloned().unwrap_or_else(|| s_or(st, "onSuccess", "next"));
         let on_failure = renames.get(&st.get("onFailure").map(py_str).unwrap_or("None".into())).cloned().unwrap_or_else(|| s_or(st, "onFailure", "stop"));
-        clean.push(json!({
+        let guards = guard::clean(st, &format!("Step “{label}”"))?;
+        let mut cs = json!({
             "id": sid,
             "name": s_or(st, "name", &format!("Step {}", i + 1)).trim(),
             "kind": kind,
@@ -507,9 +590,13 @@ pub fn validate(wf: &Value) -> Res<Value> {
             "onSuccess": on_success,
             "onFailure": on_failure,
             "loopBack": clean_loop(st.get("loopBack"), &renames)?,
-            "agents": step_agents,
+            "agents": if kind == "gate" { vec![] } else { step_agents },
             "review": b(st, "review"),
-        }));
+            "gates": step_gates,
+            "gate": inline_gate,
+        });
+        cs.as_object_mut().unwrap().extend(guards);
+        clean.push(cs);
     }
     for st in clean.iter_mut() {
         let name = s(st, "name");
@@ -569,6 +656,14 @@ pub fn validate(wf: &Value) -> Res<Value> {
         for k in ["prompt", "run", "check", "judge"] {
             template::check(&s(st, k), &inputs, &step_ids).map_err(|e| format!("Step “{}”, {k}: {e}", s(st, "name")))?;
         }
+        for k in ["run", "judge"] {
+            template::check(&s(&st["gate"], k), &inputs, &step_ids).map_err(|e| format!("Step “{}”, gate {k}: {e}", s(st, "name")))?;
+        }
+    }
+    for g in &gates {
+        for k in ["run", "judge"] {
+            template::check(&s(g, k), &inputs, &step_ids).map_err(|e| format!("Gate “{}”, {k}: {e}", s(g, "name")))?;
+        }
     }
     let isolation = s_or(wf, "isolation", "none");
     match isolation.as_str() {
@@ -594,8 +689,9 @@ pub fn validate(wf: &Value) -> Res<Value> {
         Some(Value::String(t)) if t.is_empty() => Value::Null,
         Some(v) => json!(py_float(v)?),
     };
+    let guards = guard::clean(wf, "Workflow")?;
     let id = if b(wf, "id") { wf["id"].clone() } else { json!(wfstore::new_id(&name)) };
-    Ok(json!({
+    let mut out = json!({
         "id": id,
         "name": name,
         "cwd": cwd,
@@ -612,10 +708,13 @@ pub fn validate(wf: &Value) -> Res<Value> {
         "deliver": deliver,
         "autoResume": wf.get("autoResume").map(truthy).unwrap_or(false),
         "agents": agents,
+        "gates": gates,
         "steps": clean,
         "updated": if b(wf, "updated") { wf["updated"].clone() } else { json!(now()) },
         "file": s(wf, "file"),
-    }))
+    });
+    out.as_object_mut().unwrap().extend(guards);
+    Ok(out)
 }
 
 pub fn worktree_defaults() -> Value {
@@ -697,6 +796,37 @@ fn clean_deliver(v: Option<&Value>) -> Res<Value> {
     out["push"] = json!(v.get("push").map(truthy).unwrap_or(false) || pr.is_object());
     out["pr"] = pr;
     Ok(out)
+}
+
+/// Gates as a list of mappings, whether written as a mapping (name: spec) or a list (- name: …).
+pub fn gate_list(v: Option<&Value>) -> Vec<Value> {
+    match v {
+        Some(Value::Object(m)) => m
+            .iter()
+            .map(|(name, spec)| {
+                let mut g = spec.as_object().cloned().unwrap_or_default();
+                g.shift_insert(0, "name".into(), json!(name));
+                Value::Object(g)
+            })
+            .collect(),
+        Some(Value::Array(a)) => a.iter().filter(|g| g.is_object()).cloned().collect(),
+        _ => vec![],
+    }
+}
+
+/// One gate's checks: a command that must pass, AI judge criteria, and/or a person's approval.
+fn clean_gate(g: &Value, label: &str) -> Res<Value> {
+    if !g.is_object() {
+        return Err(format!("{label} should be a mapping with run, judge and/or approve."));
+    }
+    let run = s(g, "run").trim().to_string();
+    let judge = s(g, "judge").trim().to_string();
+    let approve = b(g, "approve");
+    if run.is_empty() && judge.is_empty() && !approve {
+        return Err(format!("{label} needs something to check: a command (run), acceptance criteria (judge) or approve: true."));
+    }
+    let timeout = g.get("timeout").filter(|v| truthy(v)).map(py_int).unwrap_or(Ok(GATE_TIMEOUT))?.clamp(10, 86400);
+    Ok(json!({"description": s(g, "description").trim(), "run": run, "timeout": timeout, "judge": judge, "approve": approve}))
 }
 
 fn clean_loop(lb: Option<&Value>, renames: &HashMap<String, String>) -> Res<Value> {
@@ -953,4 +1083,73 @@ pub fn agents_used(session: &str) -> HashSet<String> {
 /// The JSON object with these keys, in this order (missing ones as null).
 pub fn pick(o: &Value, keys: &[&str]) -> Map<String, Value> {
     keys.iter().map(|k| (k.to_string(), o.get(*k).cloned().unwrap_or(Value::Null))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(yaml: &str) -> Value {
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut wf = wfstore::from_doc(yamldoc::parse(yaml).unwrap(), "t").unwrap();
+        wf["cwd"] = json!(dir);
+        wf
+    }
+
+    const GATED: &str = "name: Gated
+gates:
+  tests-pass: {run: npm test, timeout: 120}
+  spec-ok:
+    judge: |
+      - every requirement is met
+  sign-off: {approve: true}
+steps:
+  - id: build
+    prompt: Build it
+    gates: tests-pass
+  - id: ready
+    name: Ready?
+    gate: [spec-ok, sign-off]
+    loopBack: {to: build, max: 2}
+  - id: own
+    name: Own checks
+    gate: {run: make lint}
+";
+
+    #[test]
+    fn gates_validate_and_round_trip() {
+        let wf = validate(&raw(GATED)).unwrap();
+        let names: Vec<String> = arr(&wf, "gates").iter().map(|g| s(g, "name")).collect();
+        assert_eq!(names, ["tests-pass", "spec-ok", "sign-off"]);
+        assert_eq!(wf["gates"][0]["timeout"], 120);
+        let steps = arr(&wf, "steps");
+        assert_eq!((s(&steps[0], "kind"), str_list(&steps[0], "gates")), ("claude".into(), vec!["tests-pass".to_string()]));
+        assert_eq!((s(&steps[1], "kind"), str_list(&steps[1], "gates")), ("gate".into(), vec!["spec-ok".to_string(), "sign-off".to_string()]));
+        assert_eq!(s(&steps[2], "kind"), "gate");
+        assert_eq!(s(&steps[2]["gate"], "run"), "make lint");
+        // written back and read again: the same workflow
+        let doc = wfstore::to_doc(&wf);
+        assert_eq!(doc["steps"][1]["gate"], json!(["spec-ok", "sign-off"]));
+        assert_eq!(doc["steps"][1]["loopBack"], json!({"to": "build", "max": 2}));
+        let text = yamldoc::dump(None, &doc, "");
+        let mut again = wfstore::from_doc(yamldoc::parse(&text).unwrap(), "t").unwrap();
+        again["cwd"] = wf["cwd"].clone();
+        let again = validate(&again).unwrap();
+        assert_eq!(again["gates"], wf["gates"]);
+        assert_eq!(again["steps"], wf["steps"]);
+        assert!(lint(&raw(GATED), &wf).is_empty(), "{:?}", lint(&raw(GATED), &wf));
+    }
+
+    #[test]
+    fn gate_mistakes_are_explained() {
+        let e = validate(&raw("name: x\nsteps:\n  - prompt: hi\n    gates: [nope]\n")).unwrap_err();
+        assert!(e.contains("uses gate “nope”, which isn't defined"), "{e}");
+        let e = validate(&raw("name: x\ngates:\n  empty: {description: nothing}\nsteps:\n  - prompt: hi\n")).unwrap_err();
+        assert!(e.contains("needs something to check"), "{e}");
+        let e = validate(&raw("name: x\nsteps:\n  - name: G\n    kind: gate\n")).unwrap_err();
+        assert!(e.contains("has nothing to check"), "{e}");
+        let wf = raw("name: x\ngates:\n  unused: {run: 'true'}\nsteps:\n  - prompt: hi\n");
+        let warnings = lint(&wf, &validate(&wf).unwrap());
+        assert!(warnings.iter().any(|w| w.contains("gate “unused” is defined but no step uses it")), "{warnings:?}");
+    }
 }

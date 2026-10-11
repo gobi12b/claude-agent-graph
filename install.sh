@@ -5,6 +5,7 @@
 set -eu
 
 BASE="${AGENT_GRAPH_BASE:-https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main}"
+RELEASE="${AGENT_GRAPH_RELEASE:-https://github.com/gobi12b/claude-agent-graph/releases/latest/download}"
 BIN="${AGENT_GRAPH_BIN:-$HOME/.local/bin}"
 DATA="$HOME/.local/share/claude-agent-graph"
 
@@ -42,12 +43,12 @@ case "$OS/$ARCH" in
 esac
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-fetch "$BASE/binaries/SHA256SUMS" "$TMP/SHA256SUMS" || die "couldn't download the checksums from $BASE/binaries/"
+fetch "$RELEASE/SHA256SUMS" "$TMP/SHA256SUMS" || die "couldn't download the checksums from $RELEASE/"
 mkdir -p "$BIN"
 INSTALLED=""
 for NAME in $CHOICES; do
     say "Downloading $NAME"
-    fetch "$BASE/binaries/$NAME" "$TMP/$NAME" || die "couldn't download $BASE/binaries/$NAME"
+    fetch "$RELEASE/$NAME" "$TMP/$NAME" || die "couldn't download $RELEASE/$NAME"
     WANT="$(grep " $NAME\$" "$TMP/SHA256SUMS" | cut -d' ' -f1)"
     GOT="$(sha256 "$TMP/$NAME" || true)"
     if [ -n "$GOT" ] && [ "$WANT" != "$GOT" ]; then die "$NAME doesn't match its checksum; try again later."; fi
