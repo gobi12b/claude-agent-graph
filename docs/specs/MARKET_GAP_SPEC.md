@@ -1,7 +1,7 @@
 # Market comparison and feature-gap spec
 
 **Author:** market research · **For:** product and engineering · **Date:** 2026-10-04
-**Branch:** `spec/market-gap-analysis` · **Status:** proposal; G1, G2 and G5 implemented in the Rust version (see [section 9](#9-implementation-status))
+**Branch:** `spec/market-gap-analysis` · **Status:** proposal; G1, G2, G5 and G7 implemented in the Rust version (see [section 9](#9-implementation-status))
 
 ## 1. Why this document
 
@@ -79,7 +79,7 @@ Scored on how often the gap comes up in reviews and competitor comparisons (dema
 | G4 | Triggers: schedule, file watch, webhook, GitHub | High | Medium | M | 6 | **P1** | Not started |
 | G5 | Git delivery: branch, commit, pull request | High | Medium | S | 3 | **P0** | ✅ Rust |
 | G6 | Durable runs: auto-resume after crash or reboot | Medium | High for long or overnight runs | M | 5 | **P1** | Not started |
-| G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | 4 | **P1** | Not started |
+| G7 | Guardrails: step budgets, limits, protected paths, secret redaction | Medium | Medium | M | 4 | **P1** | ✅ Rust (no builder UI or cost forecast yet) |
 | G8 | Fan-out over a list (`forEach`) | Medium | Medium | M | 12 | **P3** | Not started |
 | G9 | Outbound notifications and remote approvals (Slack, Discord, webhook) | Medium | Medium | M | 9 | **P2** | Not started |
 | G10 | Eval suites: run a workflow over a dataset, compare to a baseline | Medium | Low today, high for teams | L | 7 | **P1** | Not started |
@@ -480,8 +480,19 @@ Updated 2026-10-04. Branch `rust-inputs-worktree-delivery` (based on `spec/marke
 | G2 Inputs and templating | ✅ Done in Rust | `src/template.rs`, validation in `src/workflows.rs`, runner, CLI, run form in `index.html` |
 | G1 Separate worktree per run | ✅ Done in Rust (worktree) | `src/worktree.rs`, `src/runner.rs`, run view in `index.html` |
 | G5 Branch, commit, PR | ✅ Done in Rust | `src/worktree.rs` (commits, branch, push, `gh pr create`), `src/runner.rs` |
-| Everything else (G3, G4, G6–G16) | Not started | |
+| G7 Guardrails | ✅ Done in Rust (YAML and runner) | `src/guard.rs`, `src/runner.rs`, validation in `src/workflows.rs` |
+| Everything else (G3, G4, G6, G8–G16) | Not started | |
 | Python version of G1, G2, G5 | Not started | The Python app warns about the new keys as unknown settings and ignores them |
+
+### G7: guardrails
+
+Done:
+- `limits` (`budgetUsd`, `maxTurns`, `timeout`), `protect`, `redact` and `redactPatterns` on the workflow and on steps; each step value overrides the workflow's. Validation errors for bad values, lint warnings for unknown keys in `limits` and for `maxTurns` on Gemini or Codex steps.
+- `budgetUsd` covers the whole step (all attempts plus the judge). What's left is passed as `--max-budget-usd`, and the runner fails the step if the reported cost goes over. `maxTurns` maps to `--max-turns`. `timeout` stops the process. All three fail with "went over its limit" and aren't retried.
+- `protect` becomes `Edit(<glob>)` / `Write(<glob>)` in `disallowedTools` for Claude steps, and is checked after every step (Claude or shell) by fingerprinting the matching files, git-ignored ones included. A violation fails the step with no retry; the attempt records the files under `protected`, and **Rewind this step** works when the folder has checkpoints.
+- `redact` masks a built-in list (Anthropic, OpenAI, GitHub, AWS, Slack and Google keys, bearer tokens, private key blocks, `*_KEY=` / `password:` style values) plus `redactPatterns` in attempt input, output and errors, shell-step log files, the step log view (Claude's own transcript is masked when shown, not rewritten) and the AI judge's prompt.
+
+Not done: builder fields under Advanced options, the per-step cost forecast, enforcing `maxTurns` for Gemini and Codex, Python.
 
 ### G2: inputs and templating
 

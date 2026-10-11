@@ -178,6 +178,26 @@ Which folder it runs in:
 
 The other settings are the ones the builder writes (open any workflow with **Open as text** to see them all): `model`, `permissionMode`, `allowedTools`, `disallowedTools`, `passOutput`, `maxBudgetUsd`, `judgeModel`, `agents`, and per step `prompt` or `run` (with `timeout` in seconds for `run`), `retries`, `check`, `judge`, `model`, `review`, `agents`, `dependsOn`, `onSuccess`, `onFailure` and `loopBack`. Steps run one after another unless `dependsOn` says otherwise. Replaying a step of a file run from the app reads the file again.
 
+#### Guardrails
+
+Set these on the workflow or on a step (the step's value wins). Files and workflows run from the app support them; the builder doesn't show them yet.
+
+```yaml
+limits:
+  budgetUsd: 0.50      # total for the step, retries and AI judge included
+  maxTurns: 40         # Claude Code steps only
+  timeout: 20m         # 90s, 20m, 1h30m; for shell steps it replaces `timeout`
+protect:               # paths the step must not change (.gitignore-style; ** spans folders)
+  - ".github/**"
+  - "**/*.lock"
+  - ".env*"
+redact: true           # mask API keys, tokens and private keys in logs, run files and judge input
+redactPatterns:        # extra regexes to mask (a first capture group is kept)
+  - "ACME-[0-9]{6}"
+```
+
+A step that goes over a limit or changes a protected file fails with "went over its limit" or "changed protected files", and isn't retried. Protected paths are also refused up front for Claude steps (as `Edit(…)` and `Write(…)` rules), and checked after every step against the files themselves, git-ignored ones such as `.env` included, so a step fails even if it claims success. `maxBudgetUsd` still caps each attempt as before.
+
 ### Check workflows: `validate`
 
 `validate` loads workflows the same way `run` does, but doesn't run anything:
