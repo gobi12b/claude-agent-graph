@@ -17,6 +17,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::util::*;
+use crate::guard::Redactor;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const DIFF_LIMIT: usize = 200_000; // characters of patch sent to the UI
@@ -221,7 +222,8 @@ fn evidence(cwd: &str, before: Option<&str>, after: Option<&str>, files: &[Strin
 
 /// Grade a step. Returns {pass, score, criteria, feedback, cost, model}.
 #[allow(clippy::too_many_arguments)]
-pub fn judge(criteria: &str, task: &str, output: &str, cwd: &str, before: Option<&str>, after: Option<&str>, files: &[String], model: &str, claude_cmd: &str) -> Res<Value> {
+/// redact: mask secrets in what the judge is shown (the step's `redact`).
+pub fn judge(criteria: &str, task: &str, output: &str, cwd: &str, before: Option<&str>, after: Option<&str>, files: &[String], model: &str, claude_cmd: &str, redact: Option<&Redactor>) -> Res<Value> {
     let model = if model.is_empty() { "haiku" } else { model };
     let answer = if output.trim().is_empty() { "(none)".to_string() } else { last_chars(output.trim(), 6000) };
     let prompt = format!(
@@ -231,6 +233,10 @@ pub fn judge(criteria: &str, task: &str, output: &str, cwd: &str, before: Option
         answer,
         evidence(cwd, before, after, files)
     );
+    let prompt = match redact {
+        Some(r) => r.redact(&prompt),
+        None => prompt,
+    };
     let mut cmd = Command::new(claude_cmd);
     cmd.args(["-p", "--model", model, "--output-format", "json", "--no-session-persistence", "--tools", "", "--system-prompt", JUDGE_SYSTEM, "--json-schema"])
         .arg(judge_schema().to_string())

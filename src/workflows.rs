@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 
 use crate::util::*;
 use crate::watcher::{file_tool, parse_ts};
-use crate::{compat, providers, quality, template, wfstore, worktree, yamldoc};
+use crate::{compat, guard, providers, quality, template, wfstore, worktree, yamldoc};
 
 pub const PERMISSION_MODES: [&str; 6] = ["acceptEdits", "auto", "dontAsk", "plan", "manual", "bypassPermissions"];
 pub const BASH_TIMEOUT: i64 = 1800; // default limit for shell steps (seconds)
@@ -106,14 +106,15 @@ pub fn find_workflow(wid: &str) -> Option<Value> {
 
 // ---- workflow files given on the command line --------------------------------------------------------
 
-const WF_KEYS: [&str; 19] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
-    "maxBudgetUsd", "judgeModel", "agents", "gates", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver"];
+const WF_KEYS: [&str; 23] = ["id", "name", "cwd", "model", "permissionMode", "allowedTools", "disallowedTools", "passOutput",
+    "maxBudgetUsd", "judgeModel", "agents", "gates", "steps", "updated", "file", "inputs", "isolation", "worktree", "deliver",
+    "limits", "protect", "redact", "redactPatterns"];
 const INPUT_KEYS: [&str; 5] = ["description", "type", "required", "default", "options"];
 const WORKTREE_KEYS: [&str; 4] = ["base", "keep", "setup", "copy"];
 const DELIVER_KEYS: [&str; 6] = ["branch", "commit", "message", "push", "pr", "when"];
 const PR_KEYS: [&str; 4] = ["draft", "title", "body", "base"];
-const STEP_KEYS: [&str; 18] = ["id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
-    "onSuccess", "onFailure", "loopBack", "agents", "review", "judge", "gates", "gate"];
+const STEP_KEYS: [&str; 22] = ["id", "name", "kind", "run", "timeout", "prompt", "retries", "check", "model", "dependsOn",
+    "onSuccess", "onFailure", "loopBack", "agents", "review", "judge", "gates", "gate", "limits", "protect", "redact", "redactPatterns"];
 const GATE_KEYS: [&str; 6] = ["name", "description", "run", "timeout", "judge", "approve"];
 pub const GATE_TIMEOUT: i64 = 600; // default limit for a gate's command (seconds)
 const AGENT_KEYS: [&str; 5] = ["name", "description", "prompt", "tools", "model"];
@@ -222,6 +223,22 @@ pub fn lint(raw: &Value, wf: &Value) -> Vec<String> {
         unknown(o.keys().collect(), &DELIVER_KEYS, "deliver", &mut warn);
         if let Some(pr) = o.get("pr").and_then(Value::as_object) {
             unknown(pr.keys().collect(), &PR_KEYS, "deliver.pr", &mut warn);
+        }
+    }
+    if let Some(o) = raw.get("limits").and_then(Value::as_object) {
+        unknown(o.keys().collect(), &guard::LIMIT_KEYS, "workflow limits", &mut warn);
+    }
+    for (i, st) in arr(raw, "steps").iter().enumerate() {
+        if let Some(o) = st.get("limits").and_then(Value::as_object) {
+            unknown(o.keys().collect(), &guard::LIMIT_KEYS, &format!("step {} limits", i + 1), &mut warn);
+        }
+    }
+    for st in arr(wf, "steps") {
+        let max_turns = st.get("limits").and_then(|l| l.get("maxTurns")).or_else(|| wf.get("limits").and_then(|l| l.get("maxTurns")));
+        let model = if b(st, "model") { s(st, "model") } else { s(wf, "model") };
+        let prov = providers::split(&model).0;
+        if max_turns.is_some() && s(st, "kind") == "claude" && prov != "claude" && prov != "ollama" {
+            warn.push(format!("step “{}”: maxTurns only applies to Claude Code steps, so it's ignored for {model}", s(st, "name")));
         }
     }
     if b(wf, "worktree") && s(wf, "isolation") != "worktree" && raw.get("worktree").is_some() {
@@ -557,7 +574,8 @@ pub fn validate(wf: &Value) -> Res<Value> {
         let int_or = |k: &str, d: i64| -> Res<i64> { st.get(k).filter(|v| truthy(v)).map(py_int).unwrap_or(Ok(d)) };
         let on_success = renames.get(&st.get("onSuccess").map(py_str).unwrap_or("None".into())).cloned().unwrap_or_else(|| s_or(st, "onSuccess", "next"));
         let on_failure = renames.get(&st.get("onFailure").map(py_str).unwrap_or("None".into())).cloned().unwrap_or_else(|| s_or(st, "onFailure", "stop"));
-        clean.push(json!({
+        let guards = guard::clean(st, &format!("Step “{label}”"))?;
+        let mut cs = json!({
             "id": sid,
             "name": s_or(st, "name", &format!("Step {}", i + 1)).trim(),
             "kind": kind,
@@ -576,7 +594,9 @@ pub fn validate(wf: &Value) -> Res<Value> {
             "review": b(st, "review"),
             "gates": step_gates,
             "gate": inline_gate,
-        }));
+        });
+        cs.as_object_mut().unwrap().extend(guards);
+        clean.push(cs);
     }
     for st in clean.iter_mut() {
         let name = s(st, "name");
@@ -669,8 +689,9 @@ pub fn validate(wf: &Value) -> Res<Value> {
         Some(Value::String(t)) if t.is_empty() => Value::Null,
         Some(v) => json!(py_float(v)?),
     };
+    let guards = guard::clean(wf, "Workflow")?;
     let id = if b(wf, "id") { wf["id"].clone() } else { json!(wfstore::new_id(&name)) };
-    Ok(json!({
+    let mut out = json!({
         "id": id,
         "name": name,
         "cwd": cwd,
@@ -690,7 +711,9 @@ pub fn validate(wf: &Value) -> Res<Value> {
         "steps": clean,
         "updated": if b(wf, "updated") { wf["updated"].clone() } else { json!(now()) },
         "file": s(wf, "file"),
-    }))
+    });
+    out.as_object_mut().unwrap().extend(guards);
+    Ok(out)
 }
 
 pub fn worktree_defaults() -> Value {

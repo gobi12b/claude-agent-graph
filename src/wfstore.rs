@@ -171,6 +171,7 @@ pub fn to_doc(wf: &Value) -> Value {
     if b(wf, "judgeModel") {
         d.insert("judgeModel".into(), wf["judgeModel"].clone());
     }
+    crate::guard::to_doc(wf, &mut d);
     if wf.get("inputs").is_some_and(|i| i.as_object().is_some_and(|o| !o.is_empty())) {
         let mut inputs = Map::new();
         for (name, spec) in wf["inputs"].as_object().unwrap() {
@@ -261,6 +262,7 @@ pub fn to_doc(wf: &Value) -> Value {
                 out.insert(k.into(), v);
             }
         }
+        crate::guard::to_doc(s, &mut out);
         steps.push(Value::Object(out));
         prev = Some(py_str(&s["id"]));
     }
