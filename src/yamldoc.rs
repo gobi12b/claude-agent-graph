@@ -482,7 +482,17 @@ impl Emitter<'_> {
             lines.extend(cont.iter().map(|(rel, t)| if t.is_empty() { String::new() } else { format!("{}{t}", pad(col + rel)) }));
             return lines;
         }
+        let was_flow = note.and_then(|n| n.raw.as_ref()).is_some_and(|(first, cont)| first.starts_with('{') && cont.is_empty());
         match v {
+            // a short mapping written on one line stays on one line: loopBack: {to: fix, max: 3}
+            Value::Object(m) if was_flow && m.values().all(|x| matches!(x, Value::String(t) if !t.contains('\n')) || x.is_number() || x.is_boolean()) => {
+                let old_keys: Vec<&String> = old.and_then(Value::as_object).map(|o| o.keys().filter(|k| m.contains_key(*k)).collect()).unwrap_or_default();
+                let keys = old_keys.iter().copied().chain(m.keys().filter(|k| !old_keys.contains(k)));
+                let parts: Vec<String> = keys
+                    .map(|k| format!("{}: {}", fmt_key(k), match &m[k] { Value::String(t) => scalar(t, true), x => x.to_string() }))
+                    .collect();
+                lines.push(format!("{head} {{{}}}{inline}", parts.join(", ")));
+            }
             Value::Object(m) if !m.is_empty() => {
                 lines.push(format!("{head}{inline}"));
                 lines.extend(self.map(m, col + 2, path));
@@ -733,6 +743,15 @@ mod tests {
         let new = json!({"agents": {"x": {"tools": ["Read", "Grep"]}}, "steps": [{"id": "a", "agents": ["x", "z"]}]});
         let text = dump(Some(old), &new, "");
         assert_eq!(text, "agents:\n  x:\n    tools: [Read,\n      Grep]\nsteps:\n  - id: a\n    agents: [x, z]\n");
+        assert_eq!(parse(&text).unwrap(), new);
+    }
+
+    #[test]
+    fn one_line_mappings_stay_on_one_line() {
+        let old = "steps:\n  - id: a\n    loopBack: {to: a, max: 2}   # why\n";
+        let new = json!({"steps": [{"id": "a", "loopBack": {"to": "a", "max": 3, "when": "success"}}]});
+        let text = dump(Some(old), &new, "");
+        assert_eq!(text, "steps:\n  - id: a\n    loopBack: {to: a, max: 3, when: success}   # why\n");
         assert_eq!(parse(&text).unwrap(), new);
     }
 
