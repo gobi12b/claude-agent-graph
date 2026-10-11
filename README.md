@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/ins
 irm https://raw.githubusercontent.com/gobi12b/claude-agent-graph/main/install.ps1 | iex
 ```
 
-The installer downloads the right program for your computer from [`binaries/`](binaries/) and checks it against `binaries/SHA256SUMS`. Then it:
+The installer downloads the right program for your computer from the [latest release](https://github.com/gobi12b/claude-agent-graph/releases/latest) and checks it against the release's `SHA256SUMS`. Then it:
 
 - **macOS / Linux:** puts it at `~/.local/bin/agent-graph` and, on Linux, adds an app-menu entry with the icon.
 - **Windows:** puts it at `%LOCALAPPDATA%\Programs\claude-agent-graph\agent-graph.exe`, adds that folder to your `PATH`, and adds a Start-menu shortcut. Open a new terminal afterwards so the `PATH` change is picked up.
@@ -88,11 +88,11 @@ The installer downloads the right program for your computer from [`binaries/`](b
 
 | Computer | File | Notes |
 |---|---|---|
-| Linux, x86_64 | [`agent-graph-linux-x86_64-window`](binaries/agent-graph-linux-x86_64-window) | Native window. Needs WebKitGTK (`sudo apt install libwebkit2gtk-4.1-0` on Debian/Ubuntu, `sudo dnf install webkit2gtk4.1` on Fedora) and glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer). |
-| Linux, x86_64 | [`agent-graph-linux-x86_64`](binaries/agent-graph-linux-x86_64) | Opens in your browser. Runs on any distro with glibc 2.28+ (2018 or newer). |
-| Linux, ARM64 | [`agent-graph-linux-arm64`](binaries/agent-graph-linux-arm64) | Opens in your browser. glibc 2.28+. |
-| macOS (Apple Silicon and Intel) | [`agent-graph-macos-universal`](binaries/agent-graph-macos-universal) | Opens in your browser. |
-| Windows 10 / 11 (x64, and ARM through emulation) | [`agent-graph-windows-x86_64.exe`](binaries/agent-graph-windows-x86_64.exe) | Native window (Edge WebView2, preinstalled on Windows 10 and 11). |
+| Linux, x86_64 | [`agent-graph-linux-x86_64-window`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-linux-x86_64-window) | Native window. Needs WebKitGTK (`sudo apt install libwebkit2gtk-4.1-0` on Debian/Ubuntu, `sudo dnf install webkit2gtk4.1` on Fedora) and glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer). |
+| Linux, x86_64 | [`agent-graph-linux-x86_64`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-linux-x86_64) | Opens in your browser. Runs on any distro with glibc 2.28+ (2018 or newer). |
+| Linux, ARM64 | [`agent-graph-linux-arm64`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-linux-arm64) | Opens in your browser. glibc 2.28+. |
+| macOS (Apple Silicon and Intel) | [`agent-graph-macos-universal`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-macos-universal) | Opens in your browser. |
+| Windows 10 / 11 (x64, and ARM through emulation) | [`agent-graph-windows-x86_64.exe`](https://github.com/gobi12b/claude-agent-graph/releases/latest/download/agent-graph-windows-x86_64.exe) | Native window (Edge WebView2, preinstalled on Windows 10 and 11). |
 
 Rename it to `agent-graph` (`agent-graph.exe` on Windows) and put it somewhere on your `PATH`. On macOS and Linux, make it executable first: `chmod +x agent-graph`. On macOS, a file downloaded in a browser is quarantined, so clear it once: `xattr -d com.apple.quarantine agent-graph`. The installer's download doesn't need this.
 
@@ -432,7 +432,7 @@ The native window needs these to **build**:
 | macOS | Nothing beyond Xcode's Command Line Tools |
 | Windows | Nothing |
 
-### Rebuilding the files in `binaries/`
+### Building a release
 
 Everything except the Linux window build is cross-compiled from one Linux machine with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild). It uses [zig](https://ziglang.org) as the linker, so no other toolchains or SDKs are needed:
 
@@ -446,8 +446,12 @@ cargo zigbuild --release --target x86_64-pc-windows-gnu --features window  # →
 cargo zigbuild --release --target universal2-apple-darwin                  # → agent-graph-macos-universal
 cargo build    --release --features window                                 # → agent-graph-linux-x86_64-window (on Linux)
 
+mkdir -p binaries   # copy each build here under the name above; binaries/ is git-ignored
 cd binaries && sha256sum agent-graph-* > SHA256SUMS
+gh release create vX.Y.Z agent-graph-* SHA256SUMS --title vX.Y.Z --generate-notes
 ```
+
+The installers always fetch from the latest release, so publishing one updates every new install.
 
 The `.2.28` suffix links against glibc 2.28, so those builds run on older distros. The window build links the system WebKitGTK, so it needs at least the glibc of the machine that built it. A macOS build with the native window needs Apple's SDK, so build that one on a Mac.
 
@@ -479,7 +483,6 @@ src/
 ui/index.html   the whole UI (single file, no build step), compiled into the program
 assets/         icons
 defaults/       built-in helper library, gate library, step templates and sample workflows
-binaries/       prebuilt programs for each OS, and their checksums
 ```
 
 ## License

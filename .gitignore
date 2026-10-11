@@ -3,3 +3,6 @@ dist/
 *.bak-*
 .DS_Store
 target/
+build/
+*.egg-info/
+binaries/
